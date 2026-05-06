@@ -3,9 +3,6 @@
 .env.local
 .env.*.local
 
-# Local Supabase config (generated from .env.local)
-js/supabase-config.js
-
 # OS / editor
 .DS_Store
 Thumbs.db
