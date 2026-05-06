@@ -1,0 +1,20 @@
+# Local env files (never commit secrets)
+.env
+.env.local
+.env.*.local
+
+# Local Supabase config (generated from .env.local)
+js/supabase-config.js
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Python (in case we add scripts/ later)
+__pycache__/
+*.pyc
+.venv/
+venv/

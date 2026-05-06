@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interstate Driver Scheduler</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>Interstate Driver Scheduler</h1>
+    <div class="app-header__right">
+      <span id="user-email" class="user-email"></span>
+      <button id="sign-out-btn" class="btn btn--ghost" hidden>Sign out</button>
+      <div id="connection-status" class="status status--unknown">connecting&hellip;</div>
+    </div>
+  </header>
+
+  <!-- LOGIN VIEW -->
+  <main id="login-view" class="login-view" hidden>
+    <form id="login-form" class="login-card">
+      <h2>Dispatcher sign in</h2>
+      <p class="login-card__hint">Use the email + password your admin set up for you.</p>
+
+      <label class="field">
+        <span>Email</span>
+        <input type="email" id="login-email" autocomplete="username" required />
+      </label>
+
+      <label class="field">
+        <span>Password</span>
+        <input type="password" id="login-password" autocomplete="current-password" required />
+      </label>
+
+      <button type="submit" class="btn btn--primary" id="login-submit">Sign in</button>
+
+      <div id="login-error" class="form-error" hidden></div>
+    </form>
+  </main>
+
+  <!-- APP VIEW -->
+  <main id="app-view" class="app-main" hidden>
+
+    <!-- Tabs: Drivers / Dispatchers -->
+    <div class="tabs" id="tab-bar"></div>
+
+    <!-- Weekly stats: last / this / next -->
+    <div class="week-stats" id="week-stats"></div>
+
+    <!-- Week navigation -->
+    <div class="week-nav">
+      <div class="week-nav__left">
+        <button class="btn btn--ghost" id="week-prev" title="Previous week">&larr;</button>
+        <button class="btn btn--ghost" id="week-today">Today</button>
+        <button class="btn btn--ghost" id="week-next" title="Next week">&rarr;</button>
+        <input type="date" id="week-jump" class="week-jump" title="Jump to week" />
+      </div>
+      <div class="week-nav__title" id="week-range">&hellip;</div>
+      <div class="week-nav__right">
+        <label class="toggle">
+          <input type="checkbox" id="show-inactive" />
+          <span>Show inactive</span>
+        </label>
+        <button type="button" class="btn btn--ghost" id="copy-last-week"
+                title="Duplicate last week's schedule into this week">
+          &larr; Copy last week
+        </button>
+        <button type="button" class="btn btn--ghost" id="copy-next-week"
+                title="Duplicate this week's schedule into next week">
+          Copy to next &rarr;
+        </button>
+        <button type="button" class="btn btn--danger" id="clear-week"
+                title="Delete every entry for this week">
+          Clear week
+        </button>
+        <button type="button" class="btn btn--ghost" id="undo-btn"
+                title="Nothing to undo" disabled>
+          Undo
+        </button>
+      </div>
+    </div>
+
+    <!-- Filters: company + yard + search -->
+    <div class="filters">
+      <label class="filter">
+        <span>Company</span>
+        <select id="filter-company">
+          <option value="">All companies</option>
+        </select>
+      </label>
+      <label class="filter">
+        <span>Yard</span>
+        <select id="filter-yard">
+          <option value="">All yards</option>
+        </select>
+      </label>
+      <label class="filter filter--grow">
+        <span>Search</span>
+        <input
+          type="search"
+          id="filter-search"
+          class="filter__search"
+          placeholder="name or driver #&hellip;"
+          autocomplete="off"
+        />
+      </label>
+      <span class="filter-count muted" id="filter-count"></span>
+    </div>
+
+    <!-- View toolbar: days picker + view toggle -->
+    <div class="view-toolbar">
+      <label class="days-picker">
+        <span class="days-picker__label">Show</span>
+        <select id="days-picker"></select>
+      </label>
+      <div class="view-toggle" id="view-toggle">
+        <button type="button" class="view-btn view-btn--active" data-view="grid">Grid</button>
+        <button type="button" class="view-btn" data-view="gantt">Gantt</button>
+      </div>
+    </div>
+
+    <!-- Schedule grid -->
+    <section class="schedule" id="schedule-grid-view">
+      <div class="schedule__grid" id="schedule-grid" role="grid" aria-label="Driver schedule">
+        <!-- Header cells (driver column + N day columns) are rendered by JS. -->
+        <div class="schedule__header" id="schedule-header"></div>
+
+        <!-- Body rows are rendered into #schedule-body -->
+        <div class="schedule__body" id="schedule-body"></div>
+      </div>
+
+      <div class="schedule__empty" id="schedule-empty" hidden>
+        <p><strong>No drivers found.</strong></p>
+        <p class="muted">
+          Add drivers in Supabase Dashboard &rarr; Table Editor &rarr; <code>drivers</code>,
+          or wait for the roster to arrive. Active drivers show up here automatically.
+        </p>
+      </div>
+    </section>
+
+    <!-- Gantt view (full-week timeline per driver) -->
+    <section class="schedule schedule--gantt" id="schedule-gantt-view" hidden>
+      <div class="gantt__head">
+        <div class="gantt__driver-col">Driver</div>
+        <div class="gantt__axis" id="gantt-axis"></div>
+      </div>
+      <div class="gantt__body" id="gantt-body"></div>
+    </section>
+
+    <!-- Stats panel -->
+    <section class="stats" id="stats-view" hidden>
+      <div class="stats__toolbar">
+        <label class="stats__field">
+          <span>Range</span>
+          <select id="stats-range">
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="60">Last 60 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+        </label>
+        <label class="stats__field">
+          <span>Scope</span>
+          <select id="stats-scope">
+            <option value="all">All</option>
+            <option value="drivers">Drivers only</option>
+            <option value="dispatchers">Dispatchers only</option>
+          </select>
+        </label>
+        <span class="muted" id="stats-summary"></span>
+      </div>
+      <div class="stats__sections" id="stats-sections"></div>
+    </section>
+  </main>
+
+  <!-- Stats expanded-chart modal -->
+  <div id="stat-modal" class="modal modal--wide" hidden>
+    <div class="modal__backdrop" data-modal-close></div>
+    <div class="modal__panel modal__panel--wide">
+      <header class="modal__header">
+        <h2 id="stat-modal-title">Stat</h2>
+        <button type="button" class="btn btn--ghost modal__close" data-modal-close aria-label="Close">&times;</button>
+      </header>
+      <div class="modal__body">
+        <div class="stat-modal__chart-wrap">
+          <canvas id="stat-modal-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Driver detail modal -->
+  <div id="driver-detail-modal" class="modal modal--wide" hidden>
+    <div class="modal__backdrop" data-modal-close></div>
+    <div class="modal__panel modal__panel--wide">
+      <header class="modal__header">
+        <div>
+          <h2 id="driver-detail-title">Driver detail</h2>
+          <div class="muted" id="driver-detail-meta"></div>
+        </div>
+        <button type="button" class="btn btn--ghost modal__close" data-modal-close aria-label="Close">&times;</button>
+      </header>
+      <div class="modal__body">
+        <div class="driver-detail__grid">
+          <div class="driver-detail__col">
+            <h3>Past 7 days</h3>
+            <div class="driver-detail__stats" id="driver-past-stats"></div>
+            <ul class="driver-detail__list" id="driver-past-list"></ul>
+          </div>
+          <div class="driver-detail__col">
+            <h3>Upcoming 7 days</h3>
+            <div class="driver-detail__stats" id="driver-future-stats"></div>
+            <ul class="driver-detail__list" id="driver-future-list"></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shift / off-day editor modal -->
+  <div id="shift-modal" class="modal" hidden>
+    <div class="modal__backdrop" data-modal-close></div>
+    <form class="modal__panel" id="shift-modal-form">
+      <header class="modal__header">
+        <h2 id="shift-modal-title">Add entry</h2>
+        <button type="button" class="btn btn--ghost modal__close" data-modal-close aria-label="Close">&times;</button>
+      </header>
+
+      <div class="modal__body">
+        <div class="modal__context" id="shift-modal-context"></div>
+
+        <div class="entry-type">
+          <label><input type="radio" name="entry-type" value="shift" checked /> <span>Shift</span></label>
+          <label><input type="radio" name="entry-type" value="off" /> <span>Off / unavailable</span></label>
+        </div>
+
+        <fieldset class="entry-fields" id="shift-fields">
+          <div class="row-fields">
+            <label class="field">
+              <span>Start</span>
+              <select id="shift-start"></select>
+            </label>
+            <label class="field">
+              <span>End</span>
+              <select id="shift-end"></select>
+            </label>
+          </div>
+          <p class="muted hint" id="midnight-hint" hidden>End is before start — shift crosses midnight into the next day.</p>
+        </fieldset>
+
+        <fieldset class="entry-fields" id="off-fields" hidden>
+          <label class="field">
+            <span>Reason</span>
+            <select id="off-reason">
+              <option value="PTO">PTO</option>
+              <option value="sick">Sick</option>
+              <option value="unavailable">Unavailable</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+        </fieldset>
+
+        <label class="field">
+          <span>Notes <span class="muted">(optional)</span></span>
+          <textarea id="entry-notes" rows="2" placeholder="OT, training, anything to flag…"></textarea>
+        </label>
+
+        <div id="entry-error" class="form-error" hidden></div>
+      </div>
+
+      <footer class="modal__footer">
+        <button type="button" class="btn btn--danger" id="entry-delete" hidden>Delete</button>
+        <div class="modal__footer-spacer"></div>
+        <button type="button" class="btn btn--ghost" data-modal-close>Cancel</button>
+        <button type="submit" class="btn btn--primary" id="entry-save">Save</button>
+      </footer>
+    </form>
+  </div>
+
+  <!-- Day-detail timeline viewer -->
+  <div id="day-view" class="modal modal--wide" hidden>
+    <div class="modal__backdrop" data-modal-close></div>
+    <div class="modal__panel modal__panel--wide">
+      <header class="modal__header">
+        <div>
+          <h2 id="day-view-title">Day detail</h2>
+          <div class="muted" id="day-view-summary"></div>
+        </div>
+        <button type="button" class="btn btn--ghost modal__close" data-modal-close aria-label="Close">&times;</button>
+      </header>
+      <div class="modal__body modal__body--no-pad">
+        <div class="timeline" id="timeline">
+          <div class="timeline__axis" id="timeline-axis"></div>
+          <div class="timeline__rows" id="timeline-rows"></div>
+        </div>
+        <div class="timeline__empty" id="timeline-empty" hidden>
+          <p class="muted">No shifts scheduled for this day.</p>
+        </div>
+        <div class="timeline__off" id="timeline-off" hidden></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Supabase JS client (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Chart.js for the Stats tab -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+
+  <!-- App scripts (load order matters: deps before consumers) -->
+  <script src="js/supabase-config.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/supabase.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/shift-modal.js"></script>
+  <script src="js/day-view.js"></script>
+  <script src="js/stats.js"></script>
+  <script src="js/scheduler.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
