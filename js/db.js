@@ -41,36 +41,28 @@ window.DB = (function () {
   }
 
   // Distinct companies present in `drivers` (for the company filter dropdown).
+  // Backed by the scheduler_distinct_companies view (see migration 7).
   async function listDistinctCompanies() {
     const { data, error } = await window.sb
-      .from("drivers")
-      .select('"Company"')
-      .not('"Company"', "is", null);
+      .from("scheduler_distinct_companies")
+      .select("company");
     if (error) throw error;
-    return [...new Set(data.map(r => r.Company).filter(Boolean))].sort();
+    return [...new Set(data.map(r => r.company).filter(Boolean))].sort();
   }
 
-  // Distinct IRH yard codes for the yard filter. Splits comma-separated
-  // multi-yard values (e.g. '1,6') so each yard becomes its own option.
+  // Distinct IRH yard codes for the yard filter. Backed by the
+  // scheduler_distinct_yards view, which already splits comma-separated
+  // multi-yard values into one row per yard.
   async function listDistinctYards({ company = null, functions = null } = {}) {
     let q = window.sb
-      .from("drivers")
-      .select("irh_yard_number")
-      .not("irh_yard_number", "is", null);
-    if (company) q = q.eq('"Company"', company);
-    if (functions && functions.length) q = q.in('"function"', functions);
+      .from("scheduler_distinct_yards")
+      .select("yard");
+    if (company)                       q = q.eq("Company", company);
+    if (functions && functions.length) q = q.in("function", functions);
     const { data, error } = await q;
     if (error) throw error;
 
-    const yards = new Set();
-    for (const row of data) {
-      if (!row.irh_yard_number) continue;
-      for (const y of String(row.irh_yard_number).split(",")) {
-        const t = y.trim();
-        if (t) yards.add(t);
-      }
-    }
-    return [...yards].sort();
+    return [...new Set(data.map(r => r.yard).filter(Boolean))].sort();
   }
 
   // ---------- Schedule entries ----------

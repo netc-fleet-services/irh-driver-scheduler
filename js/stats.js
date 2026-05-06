@@ -519,235 +519,27 @@ window.Stats = (function () {
   }
 
   // ============================================================================
-  //  Helpers / aggregations
+  //  Helpers (aggregations live in stats-aggregations.js -> window.StatsAgg)
   // ============================================================================
 
-  function totalHours(entries) {
-    let total = 0;
-    for (const e of entries) {
-      if (e.entry_type !== "shift") continue;
-      total += Utils.shiftDurationHours(e.start_time, e.end_time);
-    }
-    return total;
-  }
+  const escapeHtml  = Utils.escapeHtml;
 
-  function countShifts(entries) {
-    return entries.filter(e => e.entry_type === "shift").length;
-  }
-
-  function timeToHours(t) {
-    if (!t) return 0;
-    const [h, m] = String(t).split(":").map(Number);
-    return h + (m || 0) / 60;
-  }
-
-  function escapeHtml(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
-  }
-
-  // Coverage-by-hour: for each hour 0..23, average # drivers covering across days.
-  function aggHoursByHourOfDay(entries, days) {
-    const counts = new Array(24).fill(0);
-    for (const e of entries) {
-      if (e.entry_type !== "shift") continue;
-      let s = timeToHours(e.start_time);
-      let f = timeToHours(e.end_time);
-      if (f <= s) f += 24;
-      const start = Math.floor(s);
-      const end   = Math.ceil(f);
-      for (let h = start; h < end; h++) counts[h % 24] += 1;
-    }
-    const dayCount = Math.max(1, days || state.rangeDays);
-    return counts.map(c => +(c / dayCount).toFixed(2));
-  }
-
-  // Coverage-by-day-of-week: total scheduled hours grouped by Mon..Sun.
-  function aggHoursByDayOfWeek(entries) {
-    const labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const buckets = new Array(7).fill(0);
-    for (const e of entries) {
-      if (e.entry_type !== "shift") continue;
-      const d = Utils.fromIsoDate(e.schedule_date);
-      const dow = (d.getDay() + 6) % 7;   // Mon=0
-      buckets[dow] += Utils.shiftDurationHours(e.start_time, e.end_time);
-    }
-    return { labels, data: buckets.map(v => +v.toFixed(1)) };
-  }
-
-  // 7-day x 24-hour heatmap: avg drivers per hour per dow.
-  function aggHeatmap(entries) {
-    const grid = Array.from({ length: 7 }, () => new Array(24).fill(0));
-    const dayCounts = new Array(7).fill(0);
-    const seenDates = new Set();
-    for (const e of entries) {
-      if (!seenDates.has(e.schedule_date)) {
-        const d = Utils.fromIsoDate(e.schedule_date);
-        const dow = (d.getDay() + 6) % 7;
-        dayCounts[dow] += 1;
-        seenDates.add(e.schedule_date);
-      }
-      if (e.entry_type !== "shift") continue;
-      const d = Utils.fromIsoDate(e.schedule_date);
-      const dow = (d.getDay() + 6) % 7;
-      let s = timeToHours(e.start_time);
-      let f = timeToHours(e.end_time);
-      if (f <= s) f += 24;
-      for (let h = Math.floor(s); h < Math.ceil(f); h++) {
-        grid[dow][h % 24] += 1;
-      }
-    }
-    // Average per occurrence of that dow in the range
-    return grid.map((row, dow) =>
-      row.map(v => dayCounts[dow] ? +(v / dayCounts[dow]).toFixed(2) : 0)
-    );
-  }
-
-  function aggShiftLengthDist(entries) {
-    const bins = [4, 6, 8, 10, 12, 24];   // upper bounds
-    const labels = ["<4h", "4-6h", "6-8h", "8-10h", "10-12h", "12+h"];
-    const counts = new Array(bins.length).fill(0);
-    for (const e of entries) {
-      if (e.entry_type !== "shift") continue;
-      const h = Utils.shiftDurationHours(e.start_time, e.end_time);
-      let i = bins.findIndex(b => h <= b); if (i < 0) i = bins.length - 1;
-      counts[i] += 1;
-    }
-    return { labels, data: counts };
-  }
-
-  function aggDayNightSplit(entries) {
-    let day = 0, night = 0, overnight = 0;
-    for (const e of entries) {
-      if (e.entry_type !== "shift") continue;
-      const s = timeToHours(e.start_time);
-      const f = timeToHours(e.end_time);
-      if (f <= s) overnight += 1;
-      else if (s >= 18 || f <= 6) night += 1;
-      else day += 1;
-    }
-    return { labels: ["Day", "Night", "Overnight"], data: [day, night, overnight] };
-  }
-
-  function aggHoursPerDriver(entries, drivers) {
-    const map = new Map();
-    for (const d of drivers) map.set(d.id, 0);
-    for (const e of entries) {
-      if (e.entry_type !== "shift") continue;
-      if (!map.has(e.driver_id)) continue;
-      map.set(e.driver_id, map.get(e.driver_id) + Utils.shiftDurationHours(e.start_time, e.end_time));
-    }
-    return [...map.entries()].map(([id, hours]) => {
-      const d = drivers.find(x => x.id === id);
-      return { id, name: d?.name || `#${id}`, hours: +hours.toFixed(1), driver: d };
-    });
-  }
-
-  function aggHoursDistribution(entries, drivers) {
-    const arr = aggHoursPerDriver(entries, drivers).map(x => x.hours);
-    const max = Math.max(40, ...arr);
-    const binWidth = Math.ceil(max / 8);
-    const bins = [];
-    for (let i = 0; i * binWidth <= max; i++) bins.push(i * binWidth);
-    const labels = bins.map((b, i) => i === bins.length - 1 ? `${b}+` : `${b}-${bins[i + 1]}`);
-    const counts = new Array(bins.length).fill(0);
-    for (const h of arr) {
-      let idx = Math.min(bins.length - 1, Math.floor(h / binWidth));
-      counts[idx] += 1;
-    }
-    return { labels, data: counts };
-  }
-
-  function aggFunctionBreakdown(entries, drivers) {
-    const drvFn = new Map(drivers.map(d => [d.id, d.function || "Unknown"]));
-    const buckets = new Map();
-    for (const e of entries) {
-      if (e.entry_type !== "shift") continue;
-      const fn = drvFn.get(e.driver_id) || "Unknown";
-      const h = Utils.shiftDurationHours(e.start_time, e.end_time);
-      buckets.set(fn, (buckets.get(fn) || 0) + h);
-    }
-    const arr = [...buckets.entries()].sort((a, b) => b[1] - a[1]);
-    return {
-      labels: arr.map(x => x[0]),
-      data:   arr.map(x => +x[1].toFixed(1)),
-    };
-  }
-
-  function aggOffReasons(entries) {
-    const buckets = new Map();
-    for (const e of entries) {
-      if (e.entry_type !== "off") continue;
-      const r = e.off_reason || "unknown";
-      buckets.set(r, (buckets.get(r) || 0) + 1);
-    }
-    const arr = [...buckets.entries()].sort((a, b) => b[1] - a[1]);
-    return { labels: arr.map(x => x[0]), data: arr.map(x => x[1]) };
-  }
-
-  function aggYardUtilization(entries, drivers) {
-    const drvYard = new Map();
-    for (const d of drivers) {
-      const y = d.irh_yard_number || "—";
-      // multi-yard drivers split evenly
-      const list = String(y).split(",").map(s => s.trim()).filter(Boolean);
-      drvYard.set(d.id, list.length ? list : ["—"]);
-    }
-    const buckets = new Map();
-    for (const e of entries) {
-      if (e.entry_type !== "shift") continue;
-      const yards = drvYard.get(e.driver_id) || ["—"];
-      const h = Utils.shiftDurationHours(e.start_time, e.end_time) / yards.length;
-      for (const y of yards) buckets.set(y, (buckets.get(y) || 0) + h);
-    }
-    const arr = [...buckets.entries()].sort((a, b) => b[1] - a[1]);
-    return { labels: arr.map(x => x[0]), data: arr.map(x => +x[1].toFixed(1)) };
-  }
-
-  // For trends — bucket by ISO-week relative to today.
-  function bucketByWeek(entries, weeks) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const buckets = new Array(weeks).fill(0).map(() => []);
-    const labels = [];
-    for (let i = weeks - 1; i >= 0; i--) {
-      const start = Utils.addDays(today, -7 * (i + 1) + 1);
-      labels.push(start.toLocaleDateString(undefined, { month: "short", day: "numeric" }));
-    }
-    for (const e of entries) {
-      const d = Utils.fromIsoDate(e.schedule_date);
-      const diffDays = Math.floor((today - d) / (1000 * 60 * 60 * 24));
-      if (diffDays < 0) continue;
-      const wIdx = weeks - 1 - Math.floor(diffDays / 7);
-      if (wIdx < 0 || wIdx >= weeks) continue;
-      buckets[wIdx].push(e);
-    }
-    return { labels, buckets };
-  }
-
-  function aggWeeklyTotals(entries, weeks) {
-    const { labels, buckets } = bucketByWeek(entries, weeks);
-    return { labels, data: buckets.map(b => +totalHours(b).toFixed(1)) };
-  }
-
-  function aggOvernightByWeek(entries, weeks) {
-    const { labels, buckets } = bucketByWeek(entries, weeks);
-    return {
-      labels,
-      data: buckets.map(b =>
-        b.filter(e => e.entry_type === "shift" && e.end_time < e.start_time).length
-      ),
-    };
-  }
-
-  function aggActiveDriverCountByWeek(entries, weeks) {
-    const { labels, buckets } = bucketByWeek(entries, weeks);
-    return {
-      labels,
-      data: buckets.map(b => new Set(b.filter(e => e.entry_type === "shift").map(e => e.driver_id)).size),
-    };
-  }
+  // Re-export aggregation helpers locally so the call sites below stay short.
+  const totalHours                  = StatsAgg.totalHours;
+  const countShifts                 = StatsAgg.countShifts;
+  const aggHoursByHourOfDay         = StatsAgg.hoursByHourOfDay;
+  const aggHoursByDayOfWeek         = StatsAgg.hoursByDayOfWeek;
+  const aggHeatmap                  = StatsAgg.heatmap;
+  const aggShiftLengthDist          = StatsAgg.shiftLengthDist;
+  const aggDayNightSplit            = StatsAgg.dayNightSplit;
+  const aggHoursPerDriver           = StatsAgg.hoursPerDriver;
+  const aggHoursDistribution        = StatsAgg.hoursDistribution;
+  const aggFunctionBreakdown        = StatsAgg.functionBreakdown;
+  const aggOffReasons               = StatsAgg.offReasons;
+  const aggYardUtilization          = StatsAgg.yardUtilization;
+  const aggWeeklyTotals             = StatsAgg.weeklyTotals;
+  const aggOvernightByWeek          = StatsAgg.overnightByWeek;
+  const aggActiveDriverCountByWeek  = StatsAgg.activeDriverCountByWeek;
 
   // ============================================================================
   //  Chart factories  (Chart.js wrappers)

@@ -94,7 +94,7 @@ window.ShiftModal = (function () {
       startEl.value = "08:00";
       endEl.value   = "17:00";
     }
-    reasonEl.value = entry?.off_reason || "PTO";
+    reasonEl.value = entry?.off_reason || "unavailable";
     notesEl.value  = entry?.notes || "";
 
     deleteBtn.hidden = !entry;
@@ -227,14 +227,7 @@ window.ShiftModal = (function () {
     });
   }
 
-  function escapeHtml(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-  }
+  const escapeHtml = Utils.escapeHtml;
 
   return { mount, open, close };
 })();

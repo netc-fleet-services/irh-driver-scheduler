@@ -13,10 +13,28 @@ window.Scheduler = (function () {
     company:       APP_CONFIG.defaultCompany,
     yard:          "",
     search:        "",
-    drivers:       [],
-    entries:       [],
+    // Each view remembers its own sort. Gantt defaults to "startTime" so
+    // bars cascade left-to-right; grid defaults to "function" so categories
+    // group together. Either can be overridden by the user; the choice
+    // sticks per view.
+    sortBy: {
+      grid:  "function",
+      gantt: "startTime",
+    },
+    // Cached fetch results (set by loadData, consumed by paint).
+    allDrivers:    [],   // DB result, pre-search-filter
+    allEntries:    [],   // 3-week window of entries (last/this/next)
+    // Post-filter slices used by render & callers.
+    drivers:       [],   // allDrivers narrowed by search
+    entries:       [],   // allEntries narrowed to the visible window
     companiesLoaded: false,
   };
+
+  // Debounce timer for the search input; data is already loaded so we only
+  // need to re-paint, but rapid typing would still thrash the DOM otherwise.
+  let searchDebounceTimer = null;
+  // Set during loadData to dedupe overlapping fetches from rapid events.
+  let inflightFetch = null;
 
   // Gantt overflow: extra hours past the last day to show overnight tails.
   const GANTT_OVERFLOW_HOURS = 6;
@@ -69,12 +87,25 @@ window.Scheduler = (function () {
       render();
     });
 
+    // Sort dropdown lives inside both view headers (grid re-renders it every
+    // paint; gantt's is static in HTML). Each view edits its own per-view
+    // sort key — they don't sync, so a user's grid sort is preserved when
+    // they jump to gantt and back.
+    document.getElementById("app-view").addEventListener("change", (e) => {
+      const t = e.target;
+      if (!t) return;
+      if (t.id === "driver-sort")        state.sortBy.grid  = t.value;
+      else if (t.id === "driver-sort-gantt") state.sortBy.gantt = t.value;
+      else return;
+      paint();
+    });
+
     viewToggleEl.addEventListener("click", (e) => {
       const btn = e.target.closest(".view-btn[data-view]");
       if (!btn || btn.dataset.view === state.view) return;
       state.view = btn.dataset.view;
       applyViewToggle();
-      render();
+      paint();   // pure view switch — no DB hit needed
     });
 
     ganttBodyEl.addEventListener("click", onGanttClick);
@@ -124,7 +155,9 @@ window.Scheduler = (function () {
 
     searchEl.addEventListener("input", () => {
       state.search = searchEl.value.trim().toLowerCase();
-      render();
+      // Search is purely client-side; debounce + repaint without re-fetching.
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(paint, 120);
     });
 
     copyLastBtn.addEventListener("click", onCopyLastWeek);
@@ -138,38 +171,62 @@ window.Scheduler = (function () {
     // Click on any day header -> open the day-detail viewer.
     grid.addEventListener("click", onHeaderClick);
 
-    // Re-render when the modal saves or deletes (and later when Realtime fires).
-    document.addEventListener("schedule-changed", () => render());
+    // Re-render when the modal saves or deletes (and when Realtime fires).
+    // Coalesced through a small debounce so a burst of changes (e.g. a Copy
+    // operation that inserts 60 rows) only triggers one render.
+    document.addEventListener("schedule-changed", scheduleRerender);
+
+    // Realtime: any logged-in dispatcher's INSERT/UPDATE/DELETE re-renders us.
+    subscribeRealtime();
+  }
+
+  let rerenderTimer = null;
+  function scheduleRerender() {
+    clearTimeout(rerenderTimer);
+    rerenderTimer = setTimeout(() => render(), 100);
+  }
+
+  let realtimeChannel = null;
+  function subscribeRealtime() {
+    if (realtimeChannel || !window.sb) return;
+    realtimeChannel = window.sb
+      .channel("scheduler-changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "scheduler_driver_schedule" },
+        () => scheduleRerender(),
+      )
+      .subscribe();
   }
 
   // ---------- Bulk actions: copy last week / clear week ----------
 
   async function onCopyLastWeek() {
-    const N = state.viewDays;
-    const week = Utils.dateRange(state.anchorDate, N);
-    const lastWeek = Utils.dateRange(Utils.addDays(state.anchorDate, -N), N);
+    // Always operate on the full Mon–Sun calendar week containing the anchor,
+    // regardless of viewDays — so copying covers the entire week, not just the
+    // visible slice from the current day forward.
+    const thisWeek = Utils.weekDates(state.anchorDate);
+    const lastWeek = thisWeek.map(d => Utils.addDays(d, -7));
     const driverIds = state.drivers.map(d => d.id);
     if (!driverIds.length) {
       alert("No drivers visible — nothing to copy into.");
       return;
     }
 
-    const weekEnd = week[week.length - 1];
-    const isoStart = Utils.toIsoDate(week[0]);
-    const isoEnd   = Utils.toIsoDate(weekEnd);
-    const snapshot = snapshotForRange(driverIds);
+    const isoStart    = Utils.toIsoDate(thisWeek[0]);
+    const isoEnd      = Utils.toIsoDate(thisWeek[6]);
+    const isoSrcStart = Utils.toIsoDate(lastWeek[0]);
+    const isoSrcEnd   = Utils.toIsoDate(lastWeek[6]);
 
     setBulkBusy(true);
     try {
-      const n = await DB.copyEntriesShifted(
-        driverIds,
-        Utils.toIsoDate(lastWeek[0]),
-        Utils.toIsoDate(lastWeek[6]),
-        7
-      );
+      // Fetch the destination snapshot fresh — state.entries only covers the
+      // visible window, which may be narrower than a full week.
+      const snapshot = await fetchEntriesForRange(driverIds, isoStart, isoEnd);
+      const n = await DB.copyEntriesShifted(driverIds, isoSrcStart, isoSrcEnd, 7);
       lastBulkAction = {
         driverIds, isoStart, isoEnd, snapshot,
-        label: `Copy last week (${Utils.shortDateLabel(week[0])})`,
+        label: `Copy last week (${Utils.shortDateLabel(thisWeek[0])})`,
       };
       updateUndoButton();
       document.dispatchEvent(new CustomEvent("schedule-changed"));
@@ -183,9 +240,10 @@ window.Scheduler = (function () {
   }
 
   async function onCopyToNextWeek() {
-    const N = state.viewDays;
-    const week = Utils.dateRange(state.anchorDate, N);
-    const nextWeek = Utils.dateRange(Utils.addDays(state.anchorDate, +N), N);
+    // Always operate on the full Mon–Sun calendar week containing the anchor,
+    // regardless of viewDays — so copying covers the entire week.
+    const thisWeek = Utils.weekDates(state.anchorDate);
+    const nextWeek = thisWeek.map(d => Utils.addDays(d, 7));
     const driverIds = state.drivers.map(d => d.id);
     if (!driverIds.length) {
       alert("No drivers visible — nothing to copy.");
@@ -193,31 +251,29 @@ window.Scheduler = (function () {
     }
 
     const tabLabel = (APP_CONFIG.tabs.find(t => t.id === state.activeTab) || {}).label || "drivers";
-    const weekEnd = week[week.length - 1];
-    const nextEnd = nextWeek[nextWeek.length - 1];
     const confirmMsg =
-      `Copy this period (${Utils.shortDateLabel(week[0])} → ${Utils.shortDateLabel(weekEnd)}) ` +
-      `to next ${N} day${N === 1 ? "" : "s"} (${Utils.shortDateLabel(nextWeek[0])} → ${Utils.shortDateLabel(nextEnd)}) ` +
+      `Copy this week (${Utils.shortDateLabel(thisWeek[0])} → ${Utils.shortDateLabel(thisWeek[6])}) ` +
+      `to next week (${Utils.shortDateLabel(nextWeek[0])} → ${Utils.shortDateLabel(nextWeek[6])}) ` +
       `for ${driverIds.length} ${tabLabel}?\n\n` +
       `This will overwrite any existing entries in that range.`;
     if (!confirm(confirmMsg)) return;
 
-    const isoSrcStart  = Utils.toIsoDate(week[0]);
-    const isoSrcEnd    = Utils.toIsoDate(weekEnd);
+    const isoSrcStart  = Utils.toIsoDate(thisWeek[0]);
+    const isoSrcEnd    = Utils.toIsoDate(thisWeek[6]);
     const isoDestStart = Utils.toIsoDate(nextWeek[0]);
-    const isoDestEnd   = Utils.toIsoDate(nextEnd);
+    const isoDestEnd   = Utils.toIsoDate(nextWeek[6]);
 
     setBulkBusy(true);
     try {
       const snapshot = await fetchEntriesForRange(driverIds, isoDestStart, isoDestEnd);
-      const n = await DB.copyEntriesShifted(driverIds, isoSrcStart, isoSrcEnd, N);
+      const n = await DB.copyEntriesShifted(driverIds, isoSrcStart, isoSrcEnd, 7);
 
       lastBulkAction = {
         driverIds,
         isoStart: isoDestStart,
         isoEnd:   isoDestEnd,
         snapshot,
-        label: `Copy to next ${N} day${N === 1 ? "" : "s"} (${Utils.shortDateLabel(nextWeek[0])})`,
+        label: `Copy to next week (${Utils.shortDateLabel(nextWeek[0])})`,
       };
       updateUndoButton();
       document.dispatchEvent(new CustomEvent("schedule-changed"));
@@ -244,37 +300,43 @@ window.Scheduler = (function () {
   }
 
   async function onClearWeek() {
-    const N = state.viewDays;
-    const week = Utils.dateRange(state.anchorDate, N);
-    const weekEnd = week[week.length - 1];
+    // Operate on the full Mon–Sun calendar week containing the anchor.
+    const thisWeek = Utils.weekDates(state.anchorDate);
     const driverIds = state.drivers.map(d => d.id);
     if (!driverIds.length) return;
 
-    const visibleEntryCount = state.entries.filter(
-      e => driverIds.includes(e.driver_id)
-    ).length;
-    if (!visibleEntryCount) {
-      alert("No entries to clear for this period.");
+    const isoStart = Utils.toIsoDate(thisWeek[0]);
+    const isoEnd   = Utils.toIsoDate(thisWeek[6]);
+
+    // Fetch the full destination range fresh so the count + undo snapshot
+    // include days outside the visible window.
+    let snapshot;
+    try {
+      snapshot = await fetchEntriesForRange(driverIds, isoStart, isoEnd);
+    } catch (err) {
+      console.error("Clear week pre-fetch failed:", err);
+      alert(`Couldn't read this week's entries: ${err.message || err}`);
+      return;
+    }
+
+    if (!snapshot.length) {
+      alert("No entries to clear for this week.");
       return;
     }
 
     const tabLabel = (APP_CONFIG.tabs.find(t => t.id === state.activeTab) || {}).label || "drivers";
     const confirmMsg =
-      `Delete all ${visibleEntryCount} entries for ${driverIds.length} ${tabLabel} ` +
-      `(${Utils.shortDateLabel(week[0])} → ${Utils.shortDateLabel(weekEnd)})?\n\n` +
-      `This cannot be undone.`;
+      `Delete all ${snapshot.length} entries for ${driverIds.length} ${tabLabel} ` +
+      `(${Utils.shortDateLabel(thisWeek[0])} → ${Utils.shortDateLabel(thisWeek[6])})?\n\n` +
+      `Use Undo to restore.`;
     if (!confirm(confirmMsg)) return;
-
-    const isoStart = Utils.toIsoDate(week[0]);
-    const isoEnd   = Utils.toIsoDate(weekEnd);
-    const snapshot = snapshotForRange(driverIds);
 
     setBulkBusy(true);
     try {
       await DB.deleteEntriesForDriversInRange(driverIds, isoStart, isoEnd);
       lastBulkAction = {
         driverIds, isoStart, isoEnd, snapshot,
-        label: `Clear ${Utils.shortDateLabel(week[0])} → ${Utils.shortDateLabel(weekEnd)}`,
+        label: `Clear ${Utils.shortDateLabel(thisWeek[0])} → ${Utils.shortDateLabel(thisWeek[6])}`,
       };
       updateUndoButton();
       document.dispatchEvent(new CustomEvent("schedule-changed"));
@@ -287,23 +349,6 @@ window.Scheduler = (function () {
   }
 
   // ---------- Undo ----------
-
-  // Capture a plain copy of the visible entries for the given drivers, suitable
-  // for re-inserting later. Drops the row id so re-inserts don't collide.
-  function snapshotForRange(driverIds) {
-    const set = new Set(driverIds);
-    return state.entries
-      .filter(e => set.has(e.driver_id))
-      .map(e => ({
-        driver_id:     e.driver_id,
-        schedule_date: e.schedule_date,
-        entry_type:    e.entry_type,
-        start_time:    e.start_time,
-        end_time:      e.end_time,
-        off_reason:    e.off_reason,
-        notes:         e.notes,
-      }));
-  }
 
   async function onUndo() {
     if (!lastBulkAction) return;
@@ -513,40 +558,13 @@ window.Scheduler = (function () {
   }
 
   // ---------- Render ----------
+  // render() = loadData() + paint(). Filter changes that affect the DB query
+  // (tab/yard/company/anchor/days) call render(). Search-only changes call
+  // paint() directly.
 
   async function render() {
-    if (!state.companiesLoaded) {
-      await loadCompanies();
-      await loadYards();
-    }
-
-    const N = state.viewDays;
-    const week     = Utils.dateRange(state.anchorDate,                     N);
-    const lastWeek = Utils.dateRange(Utils.addDays(state.anchorDate, -N),   N);
-    const nextWeek = Utils.dateRange(Utils.addDays(state.anchorDate, +N),   N);
-    const lastDay  = week[week.length - 1];
-    const isoStart      = Utils.toIsoDate(week[0]);
-    const isoEnd        = Utils.toIsoDate(lastDay);
-    const isoRangeStart = Utils.toIsoDate(lastWeek[0]);
-    const isoRangeEnd   = Utils.toIsoDate(nextWeek[nextWeek.length - 1]);
-
-    renderHeader(week);
-    rangeEl.textContent =
-      `${Utils.shortDateLabel(week[0])} → ${Utils.shortDateLabel(lastDay)}`;
-    jumpInput.value = isoStart;
-
-    let drivers, allEntries;
     try {
-      [drivers, allEntries] = await Promise.all([
-        DB.listDrivers({
-          includeInactive: state.showInactive,
-          company:         state.company || null,
-          yard:            yardFilterFor(state.yard),
-          functions:       activeFunctions(),
-        }),
-        // Pull 3 weeks at once so we can compute last/this/next stats from one fetch.
-        DB.listScheduleBetween(isoRangeStart, isoRangeEnd),
-      ]);
+      await loadData();
     } catch (err) {
       body.innerHTML = "";
       emptyEl.hidden = false;
@@ -556,6 +574,67 @@ window.Scheduler = (function () {
       console.error(err);
       return;
     }
+    paint();
+  }
+
+  // Fetch drivers + the 3-week entries window into state.allDrivers/allEntries.
+  // Concurrent calls collapse into a single shared promise so rapid trigger
+  // events (Realtime, schedule-changed bursts) don't pile up DB roundtrips.
+  function loadData() {
+    if (inflightFetch) return inflightFetch;
+
+    inflightFetch = (async () => {
+      if (!state.companiesLoaded) {
+        await loadCompanies();
+        await loadYards();
+      }
+
+      const [drivers, allEntries] = await Promise.all([
+        DB.listDrivers({
+          includeInactive: state.showInactive,
+          company:         state.company || null,
+          yard:            yardFilterFor(state.yard),
+          functions:       activeFunctions(),
+        }),
+        // Pull 3 weeks at once so we can compute last/this/next stats from one fetch.
+        DB.listScheduleBetween(weekRangeIsoStart(), weekRangeIsoEnd()),
+      ]);
+      state.allDrivers = drivers;
+      state.allEntries = allEntries;
+    })();
+
+    inflightFetch.finally(() => { inflightFetch = null; });
+    return inflightFetch;
+  }
+
+  function weekRangeIsoStart() {
+    const N = state.viewDays;
+    return Utils.toIsoDate(Utils.addDays(state.anchorDate, -N));
+  }
+
+  function weekRangeIsoEnd() {
+    const N = state.viewDays;
+    const nextWeek = Utils.dateRange(Utils.addDays(state.anchorDate, +N), N);
+    return Utils.toIsoDate(nextWeek[nextWeek.length - 1]);
+  }
+
+  // Filter cached data + render. Cheap; safe to call on every search keystroke.
+  function paint() {
+    const N = state.viewDays;
+    const week     = Utils.dateRange(state.anchorDate,                     N);
+    const lastWeek = Utils.dateRange(Utils.addDays(state.anchorDate, -N),   N);
+    const nextWeek = Utils.dateRange(Utils.addDays(state.anchorDate, +N),   N);
+    const lastDay  = week[week.length - 1];
+    const isoStart = Utils.toIsoDate(week[0]);
+    const isoEnd   = Utils.toIsoDate(lastDay);
+
+    renderHeader(week);
+    rangeEl.textContent =
+      `${Utils.shortDateLabel(week[0])} → ${Utils.shortDateLabel(lastDay)}`;
+    jumpInput.value = isoStart;
+
+    const drivers    = state.allDrivers || [];
+    const allEntries = state.allEntries || [];
 
     // Apply free-text search client-side (matches name OR IRH# OR DB id).
     const filtered = filterBySearch(drivers, state.search);
@@ -608,6 +687,12 @@ window.Scheduler = (function () {
   // ---------- Gantt view ----------
 
   function renderGantt(drivers, entries, week) {
+    // Keep the gantt's static sort dropdown in sync with state.
+    const ganttSort = document.getElementById("driver-sort-gantt");
+    if (ganttSort && ganttSort.value !== state.sortBy.gantt) {
+      ganttSort.value = state.sortBy.gantt;
+    }
+
     const totalHours = ganttHours();
     // Day labels (clickable -> open day-detail) + 24h boundary lines
     const labels = week.map((d, i) => {
@@ -632,32 +717,9 @@ window.Scheduler = (function () {
     }
 
     const weekStartMs = week[0].getTime();
+    const sorted = sortDrivers(drivers, { entries, week });
 
-    // Sort drivers by their earliest shift start across the visible window so
-    // bars cascade naturally left-to-right. Drivers with no shifts go last.
-    const earliestStart = (driverId) => {
-      const driverEntries = byDriver.get(driverId) || [];
-      const shifts = driverEntries.filter(e => e.entry_type === "shift");
-      if (!shifts.length) return Infinity;
-      let min = Infinity;
-      for (const e of shifts) {
-        const date = Utils.fromIsoDate(e.schedule_date);
-        const dayOffsetH = Math.round((date.getTime() - weekStartMs) / 3600000);
-        if (dayOffsetH < 0 || dayOffsetH >= state.viewDays * 24) continue;
-        const total = dayOffsetH + parseTimeToHours(e.start_time);
-        if (total < min) min = total;
-      }
-      return min;
-    };
-
-    const sorted = drivers.slice().sort((a, b) => {
-      const sa = earliestStart(a.id);
-      const sb = earliestStart(b.id);
-      if (sa !== sb) return sa - sb;
-      return String(a.name || "").localeCompare(String(b.name || ""));
-    });
-
-    // Build per-driver byKey for hours computation
+    // Build per-(driver|date) index for fast lookup + hours computation.
     const byKey = new Map();
     for (const e of entries) {
       const k = `${e.driver_id}|${e.schedule_date}`;
@@ -665,36 +727,93 @@ window.Scheduler = (function () {
       byKey.get(k).push(e);
     }
 
+    // OFF blocks visually start at the moment the previous day's last shift
+    // ends, not at midnight. Precompute the override start (in week-hours)
+    // for each OFF entry that has a preceding-day shift.
+    const offStartByEntryId = computeOffStartOverrides(entries, byKey, weekStartMs);
+
     ganttBodyEl.innerHTML = sorted.map(d => {
       const driverEntries = byDriver.get(d.id) || [];
       const hours = computeDriverWeekHours(d.id, week, byKey);
-      return renderGanttRow(d, weekStartMs, driverEntries, hours);
+      return renderGanttRow(d, weekStartMs, driverEntries, hours, offStartByEntryId);
     }).join("");
   }
 
-  function renderGanttRow(driver, weekStartMs, entries, hours) {
+  // For each OFF entry on day N, look at the driver's day-(N-1) shifts. If
+  // any shift's end time falls AFTER day N's midnight (overnight) or after
+  // some same-day point, the OFF should start at that latest end instead of
+  // at midnight. Returns Map<entryId, hoursSinceWeekStart>.
+  function computeOffStartOverrides(entries, byKey, weekStartMs) {
+    const overrides = new Map();
+    for (const e of entries) {
+      if (e.entry_type !== "off") continue;
+
+      const offDate = Utils.fromIsoDate(e.schedule_date);
+      const offDayOffsetH = Math.round((offDate.getTime() - weekStartMs) / 3600000);
+      // Default: starts at day N midnight.
+      let earliestStartH = offDayOffsetH;
+
+      const prevIso = Utils.toIsoDate(Utils.addDays(offDate, -1));
+      const prevEntries = byKey.get(`${e.driver_id}|${prevIso}`) || [];
+      const prevShifts = prevEntries.filter(x => x.entry_type === "shift");
+      if (!prevShifts.length) continue;
+
+      const prevDate = Utils.fromIsoDate(prevIso);
+      const prevDayOffsetH = Math.round((prevDate.getTime() - weekStartMs) / 3600000);
+
+      let latestEndAbs = -Infinity;
+      for (const ps of prevShifts) {
+        const sH = Utils.timeToHours(ps.start_time);
+        let eH  = Utils.timeToHours(ps.end_time);
+        if (eH <= sH) eH += 24;                          // overnight
+        const endAbs = prevDayOffsetH + eH;
+        if (endAbs > latestEndAbs) latestEndAbs = endAbs;
+      }
+      if (latestEndAbs > earliestStartH) earliestStartH = latestEndAbs;
+
+      // Don't push the bar off the left edge if the previous day isn't
+      // visible (e.g. yard switch). Falls back to midnight in that case.
+      if (earliestStartH < offDayOffsetH && prevDayOffsetH < 0) continue;
+
+      if (earliestStartH !== offDayOffsetH) overrides.set(e.id, earliestStartH);
+    }
+    return overrides;
+  }
+
+  function renderGanttRow(driver, weekStartMs, entries, hours, offStartByEntryId) {
     const totalHours = ganttHours();
     const dayLines = Array.from({ length: state.viewDays }, (_, i) => {
       const leftPct = (((i + 1) * 24) / totalHours) * 100;
       return `<div class="gantt__divider" style="left:${leftPct}%"></div>`;
     }).join("");
 
-    const bars = entries.map(e => renderGanttBar(e, weekStartMs)).filter(Boolean).join("");
+    const bars = entries.map(e =>
+      renderGanttBar(e, weekStartMs, offStartByEntryId)
+    ).filter(Boolean).join("");
 
-    const meta = `#${escapeHtml(driver.irh_driver_number || driver.id)} · ${escapeHtml(driver.function || "—")}`;
+    // Same markup as the grid's driver cell so both views show the type badge,
+    // yard, weekly hours, and inactive flag identically. The outer container
+    // class differs to keep the gantt's column-width layout.
+    const isInactive = driver.active === false;
     const hoursBadge = hours > 0
       ? `<span class="driver-hours" title="Scheduled this week">${escapeHtml(Utils.formatHours(hours))}</span>`
       : "";
+    const driverInfo = `
+      <div class="gantt-row__driver ${isInactive ? "is-inactive" : ""}" data-driver-id="${driver.id}">
+        <div class="driver-name">
+          ${escapeHtml(driver.name || "(unnamed)")}
+          ${hoursBadge}
+        </div>
+        <div class="driver-meta">
+          <span class="badge badge--${categoryClass(driver.function)}">${escapeHtml(driver.function || "—")}</span>
+          <span class="muted">#${escapeHtml(driver.irh_driver_number || driver.id)} · yard ${escapeHtml(formatYards(driver.irh_yard_number) || driver.yard || "—")}</span>
+          ${isInactive ? `<span class="badge badge--off">inactive</span>` : ""}
+        </div>
+      </div>`;
 
     return `
       <div class="gantt-row">
-        <div class="gantt-row__driver">
-          <div class="gantt-row__name">
-            ${escapeHtml(driver.name)}
-            ${hoursBadge}
-          </div>
-          <div class="muted gantt-row__meta">${meta}</div>
-        </div>
+        ${driverInfo}
         <div class="gantt-row__track">
           ${dayLines}
           ${bars}
@@ -703,7 +822,7 @@ window.Scheduler = (function () {
     `;
   }
 
-  function renderGanttBar(entry, weekStartMs) {
+  function renderGanttBar(entry, weekStartMs, offStartByEntryId) {
     const totalHours = ganttHours();
     const lastVisibleHour = state.viewDays * 24;            // exclusive end of the visible day range
     const date = Utils.fromIsoDate(entry.schedule_date);
@@ -711,8 +830,15 @@ window.Scheduler = (function () {
     if (dayOffsetH < 0 || dayOffsetH >= lastVisibleHour) return "";
 
     if (entry.entry_type === "off") {
-      const leftPct  = (dayOffsetH / totalHours) * 100;
-      const widthPct = (24 / totalHours) * 100;
+      // Default span = the full off day. If the driver had a shift end on the
+      // previous day (overnight, or just any same-day shift), the off block
+      // starts at that shift's end instead of midnight, so it visually
+      // connects to the work that preceded it.
+      const dayEndH = dayOffsetH + 24;
+      const overrideStartH = offStartByEntryId?.get(entry.id);
+      const startH = (overrideStartH != null) ? overrideStartH : dayOffsetH;
+      const leftPct  = (Math.max(0, startH) / totalHours) * 100;
+      const widthPct = ((dayEndH - Math.max(0, startH)) / totalHours) * 100;
       return `
         <div class="gantt-bar gantt-bar--off"
              style="left:${leftPct}%; width:${widthPct}%"
@@ -750,11 +876,7 @@ window.Scheduler = (function () {
     `;
   }
 
-  function parseTimeToHours(t) {
-    if (!t) return 0;
-    const [h, m] = String(t).split(":").map(Number);
-    return h + (m || 0) / 60;
-  }
+  const parseTimeToHours = Utils.timeToHours;
 
   function onGanttClick(e) {
     if (ganttSuppressClick) return;
@@ -994,7 +1116,21 @@ window.Scheduler = (function () {
       `220px repeat(${week.length}, minmax(120px, 1fr))`;
 
     const today = Utils.toIsoDate(new Date());
-    const cells = [`<div class="cell cell--header cell--driver">Driver</div>`];
+    const sel = (v) => state.sortBy.grid === v ? " selected" : "";
+    const driverHeader = `
+      <div class="cell cell--header cell--driver">
+        <label class="driver-sort">
+          <span class="driver-sort__label">Drivers</span>
+          <select id="driver-sort" class="driver-sort__select"
+                  title="Sort drivers by…">
+            <option value="function"${sel("function")}>Type</option>
+            <option value="name"${sel("name")}>Name</option>
+            <option value="driverNumber"${sel("driverNumber")}>Driver #</option>
+            <option value="startTime"${sel("startTime")}>Start time</option>
+          </select>
+        </label>
+      </div>`;
+    const cells = [driverHeader];
     week.forEach((d, i) => {
       const iso = Utils.toIsoDate(d);
       const isToday = iso === today;
@@ -1022,13 +1158,76 @@ window.Scheduler = (function () {
       byKey.get(key).push(e);
     }
 
-    const sorted = drivers.slice().sort((a, b) => {
-      const catCmp = String(a.function || "").localeCompare(String(b.function || ""));
-      if (catCmp !== 0) return catCmp;
-      return String(a.name || "").localeCompare(String(b.name || ""));
-    });
-
+    const sorted = sortDrivers(drivers, { entries, week });
     body.innerHTML = sorted.map(d => renderDriverRow(d, week, byKey)).join("");
+  }
+
+  // Apply the current view's sort. Always falls back to name as the secondary
+  // key so adjacent rows in the same group order predictably.
+  // `entries` + `week` are only required when sorting by startTime.
+  function sortDrivers(drivers, { entries = [], week = [] } = {}) {
+    const sortKey = state.view === "gantt" ? state.sortBy.gantt : state.sortBy.grid;
+
+    const byName = (a, b) =>
+      String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" });
+
+    const numericIfPossible = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const byDriverNumber = (a, b) => {
+      const an = numericIfPossible(a.irh_driver_number);
+      const bn = numericIfPossible(b.irh_driver_number);
+      if (an !== null && bn !== null) return an - bn;
+      if (an === null && bn !== null) return 1;
+      if (an !== null && bn === null) return -1;
+      return String(a.irh_driver_number || a.id).localeCompare(
+        String(b.irh_driver_number || b.id),
+        undefined,
+        { numeric: true },
+      );
+    };
+
+    // Per-driver earliest shift start (in hours since week start) across the
+    // visible window. Drivers with no shift in-window go to the bottom.
+    const earliestStartByDriver = (() => {
+      if (sortKey !== "startTime" || !week.length) return null;
+      const weekStartMs = week[0].getTime();
+      const totalHoursVisible = (week.length) * 24;
+      const map = new Map();
+      for (const e of entries) {
+        if (e.entry_type !== "shift") continue;
+        const date = Utils.fromIsoDate(e.schedule_date);
+        const dayOffsetH = Math.round((date.getTime() - weekStartMs) / 3600000);
+        if (dayOffsetH < 0 || dayOffsetH >= totalHoursVisible) continue;
+        const total = dayOffsetH + Utils.timeToHours(e.start_time);
+        const prev = map.get(e.driver_id);
+        if (prev === undefined || total < prev) map.set(e.driver_id, total);
+      }
+      return map;
+    })();
+
+    return drivers.slice().sort((a, b) => {
+      switch (sortKey) {
+        case "name":
+          return byName(a, b);
+        case "driverNumber": {
+          const cmp = byDriverNumber(a, b);
+          return cmp !== 0 ? cmp : byName(a, b);
+        }
+        case "startTime": {
+          const sa = earliestStartByDriver?.get(a.id) ?? Infinity;
+          const sb = earliestStartByDriver?.get(b.id) ?? Infinity;
+          if (sa !== sb) return sa - sb;
+          return byName(a, b);
+        }
+        case "function":
+        default: {
+          const cmp = String(a.function || "").localeCompare(String(b.function || ""));
+          return cmp !== 0 ? cmp : byName(a, b);
+        }
+      }
+    });
   }
 
   function renderDriverRow(driver, week, byKey) {
@@ -1170,14 +1369,22 @@ window.Scheduler = (function () {
     }
   }
 
-  function escapeHtml(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-  }
+  const escapeHtml = Utils.escapeHtml;
 
-  return { mount, render, goTo, shiftWeek };
+  return {
+    mount,
+    render,
+    goTo,
+    shiftWeek,
+    getAnchorDate: () => state.anchorDate,
+    getActiveTab:  () => state.activeTab,
+    getActiveView: () => state.view,
+    getYard:       () => state.yard,
+    // Expand a display-yard code into the array of underlying yard codes
+    // (target itself + any aliases pointing to it). Returns null if no filter.
+    yardFilterFor,
+    // Sort an arbitrary driver list by whichever sort the active view uses.
+    // Pass { entries, week } when sorting by startTime.
+    sortDrivers,
+  };
 })();

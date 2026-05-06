@@ -15,7 +15,47 @@
   --err:         #ef4444;
   --radius:      8px;
   --radius-sm:   4px;
+
+  /* Tinted text colors used inside pale badges/pills.
+     Tuned for dark backgrounds — overridden in light theme below. */
+  --text-blue:   #93c5fd;
+  --text-green:  #86efac;
+  --text-yellow: #fcd34d;
+  --text-pink:   #f9a8d4;
+  --text-red:    #fca5a5;
+  --text-purple: #ddd6fe;
 }
+
+[data-theme="light"] {
+  --bg:          #f5f7fa;
+  --surface:     #ffffff;
+  --surface-2:   #eef1f5;
+  --border:      #d6dbe2;
+  --text:        #111827;
+  --text-dim:    #5b6473;
+  --accent:      #1d4ed8;
+  --ok:          #047857;
+  --warn:        #b45309;
+  --err:         #b91c1c;
+
+  /* Darker variants so badges remain readable on white tints. */
+  --text-blue:   #1d4ed8;
+  --text-green:  #047857;
+  --text-yellow: #92400e;
+  --text-pink:   #be185d;
+  --text-red:    #b91c1c;
+  --text-purple: #6d28d9;
+}
+
+.theme-toggle {
+  font-size: 14px;
+  line-height: 1;
+  padding: 6px 10px;
+}
+[data-theme="light"] .theme-toggle::before { content: "\263E"; }   /* ☾ moon */
+:root:not([data-theme="light"]) .theme-toggle::before { content: "\2600"; } /* ☀ sun */
+.theme-toggle { font-size: 0; }
+.theme-toggle::before { font-size: 14px; }
 
 * {
   box-sizing: border-box;
@@ -228,6 +268,34 @@ html, body {
 
 .muted { color: var(--text-dim); }
 
+/* ---------- Driver column header sort ---------- */
+.driver-sort {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.driver-sort__label {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.driver-sort__select {
+  padding: 4px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+}
+.driver-sort__select:focus { border-color: var(--accent); }
+
 /* ---------- View toggle (Grid / Gantt) ---------- */
 
 .view-toolbar {
@@ -382,12 +450,12 @@ html, body {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  gap: 4px;                          /* matches .cell--driver spacing */
   border-right: 1px solid var(--border);
   background: var(--surface);
 }
-
-.gantt-row__name { font-size: 12px; font-weight: 600; }
-.gantt-row__meta { font-size: 10px; }
+/* .driver-name / .driver-meta / .badge--* / .is-inactive styles
+   are shared with the grid view (defined under "Driver column"). */
 
 .gantt-row__track {
   position: relative;
@@ -438,7 +506,7 @@ html, body {
 .gantt-bar--off {
   background: rgba(239, 68, 68, 0.18);
   border: 1px dashed rgba(239, 68, 68, 0.4);
-  color: #fca5a5;
+  color: var(--text-red);
   font-weight: 500;
 }
 
@@ -553,7 +621,7 @@ html, body {
   margin-left: 8px;
   padding: 1px 6px;
   background: rgba(59, 130, 246, 0.15);
-  color: #93c5fd;
+  color: var(--text-blue);
   border-radius: 3px;
   font-size: 10px;
   font-weight: 700;
@@ -745,11 +813,11 @@ html, body {
   color: var(--text-dim);
 }
 
-.badge--ldt       { background: rgba(59, 130, 246, 0.15); color: #93c5fd; }
-.badge--hdt       { background: rgba(236, 72, 153, 0.15); color: #f9a8d4; }
-.badge--transport { background: rgba(34, 197, 94, 0.15);  color: #86efac; }
-.badge--road      { background: rgba(245, 158, 11, 0.15); color: #fcd34d; }
-.badge--off       { background: rgba(239, 68, 68, 0.15);  color: #fca5a5; }
+.badge--ldt       { background: rgba(59, 130, 246, 0.15); color: var(--text-blue); }
+.badge--hdt       { background: rgba(236, 72, 153, 0.15); color: var(--text-pink); }
+.badge--transport { background: rgba(34, 197, 94, 0.15);  color: var(--text-green); }
+.badge--road      { background: rgba(245, 158, 11, 0.15); color: var(--text-yellow); }
+.badge--off       { background: rgba(239, 68, 68, 0.15);  color: var(--text-red); }
 
 /* ---------- Day cells ---------- */
 
@@ -792,7 +860,7 @@ html, body {
   font-weight: 700;
   letter-spacing: 0.5px;
   background: rgba(245, 158, 11, 0.22);
-  color: #fcd34d;
+  color: var(--text-yellow);
   vertical-align: middle;
 }
 
@@ -842,7 +910,7 @@ html, body {
 }
 
 .shift-pill__times { font-weight: 700; }
-.shift-pill__times small { font-size: 9px; color: #fcd34d; margin-left: 2px; }
+.shift-pill__times small { font-size: 9px; color: var(--text-yellow); margin-left: 2px; }
 .shift-pill__notes  { font-size: 10px; color: var(--text-dim); font-weight: 400; }
 
 .shift-add {
@@ -881,7 +949,7 @@ html, body {
   text-transform: uppercase;
   font-weight: 600;
   font-size: 11px;
-  color: #fca5a5;
+  color: var(--text-red);
 }
 
 /* ---------- Empty state ---------- */
@@ -1034,7 +1102,7 @@ html, body {
 .btn--danger {
   background: rgba(239, 68, 68, 0.15);
   border-color: rgba(239, 68, 68, 0.4);
-  color: #fca5a5;
+  color: var(--text-red);
 }
 
 .btn--danger:hover:not(:disabled) {
@@ -1285,7 +1353,7 @@ html, body {
   display: inline-block;
   padding: 2px 8px;
   background: rgba(239, 68, 68, 0.12);
-  color: #fca5a5;
+  color: var(--text-red);
   border-radius: 999px;
   font-size: 11px;
 }
@@ -1559,7 +1627,7 @@ html, body {
 
 .driver-detail__pick-hrs  {
   background: rgba(59, 130, 246, 0.18);
-  color: #93c5fd;
+  color: var(--text-blue);
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 10px;
@@ -1645,7 +1713,7 @@ html, body {
 }
 
 .driver-detail__item:last-child { border-bottom: none; }
-.driver-detail__item--off { background: rgba(239, 68, 68, 0.06); color: #fca5a5; }
+.driver-detail__item--off { background: rgba(239, 68, 68, 0.06); color: var(--text-red); }
 .driver-detail__date { color: var(--text-dim); font-size: 11px; }
 
 /* ---------- Per-card range chip + popover ---------- */
@@ -1673,7 +1741,7 @@ html, body {
 }
 .stat-card__range-chip--override {
   background: rgba(139, 92, 246, 0.18);
-  color: #ddd6fe;
+  color: var(--text-purple);
   border-color: rgba(139, 92, 246, 0.5);
 }
 .stat-card__range-caret {

@@ -11,6 +11,13 @@
   const signOutBtn     = document.getElementById("sign-out-btn");
   const userEmailEl    = document.getElementById("user-email");
   const statusEl       = document.getElementById("connection-status");
+  const themeToggleBtn = document.getElementById("theme-toggle");
+
+  themeToggleBtn.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("theme", next); } catch (e) {}
+  });
 
   function setStatus(state, text) {
     statusEl.className = `status status--${state}`;
@@ -40,6 +47,7 @@
   ShiftModal.mount();
   DayView.mount();
   Stats.mount();
+  PrintSchedule.mount();
   Scheduler.mount();
 
   // Auth state -> view switching

@@ -5,12 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Interstate Driver Scheduler</title>
   <link rel="stylesheet" href="css/styles.css" />
+  <script>
+    // Apply saved theme before first paint to avoid flash.
+    try {
+      var t = localStorage.getItem("theme");
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
 </head>
 <body>
   <header class="app-header">
     <h1>Interstate Driver Scheduler</h1>
     <div class="app-header__right">
       <span id="user-email" class="user-email"></span>
+      <button id="theme-toggle" class="btn btn--ghost theme-toggle" type="button"
+              title="Toggle light / dark" aria-label="Toggle light / dark">&#9788;</button>
       <button id="sign-out-btn" class="btn btn--ghost" hidden>Sign out</button>
       <div id="connection-status" class="status status--unknown">connecting&hellip;</div>
     </div>
@@ -107,7 +116,7 @@
       <span class="filter-count muted" id="filter-count"></span>
     </div>
 
-    <!-- View toolbar: days picker + view toggle -->
+    <!-- View toolbar: days picker + sort + view toggle -->
     <div class="view-toolbar">
       <label class="days-picker">
         <span class="days-picker__label">Show</span>
@@ -117,6 +126,8 @@
         <button type="button" class="view-btn view-btn--active" data-view="grid">Grid</button>
         <button type="button" class="view-btn" data-view="gantt">Gantt</button>
       </div>
+      <button type="button" class="btn btn--ghost" id="print-btn"
+              title="Print a schedule">Print&hellip;</button>
     </div>
 
     <!-- Schedule grid -->
@@ -141,7 +152,18 @@
     <!-- Gantt view (full-week timeline per driver) -->
     <section class="schedule schedule--gantt" id="schedule-gantt-view" hidden>
       <div class="gantt__head">
-        <div class="gantt__driver-col">Driver</div>
+        <div class="gantt__driver-col">
+          <label class="driver-sort">
+            <span class="driver-sort__label">Drivers</span>
+            <select id="driver-sort-gantt" class="driver-sort__select"
+                    title="Sort drivers by…">
+              <option value="startTime">Start time</option>
+              <option value="function">Type</option>
+              <option value="name">Name</option>
+              <option value="driverNumber">Driver #</option>
+            </select>
+          </label>
+        </div>
         <div class="gantt__axis" id="gantt-axis"></div>
       </div>
       <div class="gantt__body" id="gantt-body"></div>
@@ -278,6 +300,53 @@
     </form>
   </div>
 
+  <!-- Print picker -->
+  <div id="print-modal" class="modal" hidden>
+    <div class="modal__backdrop" data-modal-close></div>
+    <form class="modal__panel" id="print-form">
+      <header class="modal__header">
+        <h2>Print schedule</h2>
+        <button type="button" class="btn btn--ghost modal__close" data-modal-close aria-label="Close">&times;</button>
+      </header>
+      <div class="modal__body">
+        <div class="entry-type">
+          <label><input type="radio" name="print-tab" value="drivers" checked /> <span>Drivers</span></label>
+          <label><input type="radio" name="print-tab" value="dispatchers" /> <span>Dispatchers</span></label>
+        </div>
+
+        <div class="entry-type">
+          <label><input type="radio" name="print-format" value="table" checked /> <span>Table (one cell per day)</span></label>
+          <label><input type="radio" name="print-format" value="gantt" /> <span>Gantt (timeline bars)</span></label>
+        </div>
+
+        <div class="row-fields">
+          <label class="field">
+            <span>Start date</span>
+            <input type="date" id="print-start" required />
+          </label>
+          <label class="field">
+            <span>Days</span>
+            <input type="number" id="print-days" min="1" max="31" value="7" required />
+          </label>
+          <label class="field">
+            <span>Yard</span>
+            <select id="print-yard">
+              <option value="">All yards</option>
+            </select>
+          </label>
+        </div>
+        <p class="muted hint">Default starts on Monday of the visible week and runs 7 days through Sunday.</p>
+
+        <div id="print-error" class="form-error" hidden></div>
+      </div>
+      <footer class="modal__footer">
+        <div class="modal__footer-spacer"></div>
+        <button type="button" class="btn btn--ghost" data-modal-close>Cancel</button>
+        <button type="submit" class="btn btn--primary" id="print-submit">Open print preview</button>
+      </footer>
+    </form>
+  </div>
+
   <!-- Day-detail timeline viewer -->
   <div id="day-view" class="modal modal--wide" hidden>
     <div class="modal__backdrop" data-modal-close></div>
@@ -302,10 +371,14 @@
     </div>
   </div>
 
-  <!-- Supabase JS client (CDN) -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <!-- Chart.js for the Stats tab -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <!-- Supabase JS client (CDN) — pinned + SRI for supply-chain safety -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"
+          integrity="sha384-GFr3yTh5lJznCbZfpTtXnwboFsxqtTQoeTZCRHhE0579KrRmlCzen5AA8ohaB5ug"
+          crossorigin="anonymous"></script>
+  <!-- Chart.js for the Stats tab — pinned + SRI -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"
+          integrity="sha384-Sse/HDqcypGpyTDpvZOJNnG0TT3feGQUkF9H+mnRvic+LjR+K1NhTt8f51KIQ3v3"
+          crossorigin="anonymous"></script>
 
   <!-- App scripts (load order matters: deps before consumers) -->
   <script src="js/supabase-config.js"></script>
@@ -316,7 +389,9 @@
   <script src="js/db.js"></script>
   <script src="js/shift-modal.js"></script>
   <script src="js/day-view.js"></script>
+  <script src="js/stats-aggregations.js"></script>
   <script src="js/stats.js"></script>
+  <script src="js/print-schedule.js"></script>
   <script src="js/scheduler.js"></script>
   <script src="js/app.js"></script>
 </body>

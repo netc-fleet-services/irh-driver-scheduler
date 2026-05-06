@@ -470,20 +470,8 @@ window.DayView = (function () {
 
   // ---------- Helpers ----------
 
-  function timeToHours(t) {
-    if (!t) return 0;
-    const [h, m] = t.split(":").map(Number);
-    return h + (m || 0) / 60;
-  }
-
-  function escapeHtml(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-  }
+  const timeToHours = Utils.timeToHours;
+  const escapeHtml  = Utils.escapeHtml;
 
   return { mount, open, close };
 })();

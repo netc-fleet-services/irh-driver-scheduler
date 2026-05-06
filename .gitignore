@@ -15,3 +15,13 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Node (only used for lint/format dev tools — not for build)
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Supabase: keep already-tracked migrations 1-7 in git (gitignore doesn't
+# untrack them), but stop NEW SQL files / CLI working artifacts from being
+# auto-staged. To intentionally commit a new migration, use `git add -f`.
+supabase/

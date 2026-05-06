@@ -98,6 +98,23 @@ window.Utils = (function () {
     return `${whole}h ${mins}m`;
   }
 
+  // "08:30" -> 8.5. Accepts "HH:MM" or "HH:MM:SS"; null/empty -> 0.
+  function timeToHours(t) {
+    if (!t) return 0;
+    const [h, m] = String(t).split(":").map(Number);
+    return h + (m || 0) / 60;
+  }
+
+  // HTML-escape a value for safe interpolation into innerHTML strings.
+  function escapeHtml(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
   return {
     toIsoDate,
     fromIsoDate,
@@ -109,5 +126,7 @@ window.Utils = (function () {
     formatTime12,
     shiftDurationHours,
     formatHours,
+    timeToHours,
+    escapeHtml,
   };
 })();

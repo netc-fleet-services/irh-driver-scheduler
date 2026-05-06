@@ -33,7 +33,7 @@ window.APP_CONFIG = {
   // How many days are visible in the grid/gantt by default. The user can
   // change this from a dropdown in the view toolbar; navigation arrows and
   // copy buttons shift by this amount.
-  defaultViewDays: 3,
+  defaultViewDays: 7,
   viewDayChoices:  [1, 2, 3, 4, 5, 6, 7, 14],
 
   // Default company filter on load. Match the value as stored in drivers."Company".

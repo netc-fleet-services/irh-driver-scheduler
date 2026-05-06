@@ -1,0 +1,44 @@
+{
+  "root": true,
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "script"
+  },
+  "globals": {
+    "APP_CONFIG":      "readonly",
+    "SUPABASE_CONFIG": "readonly",
+    "Utils":           "readonly",
+    "Auth":            "readonly",
+    "DB":              "readonly",
+    "ShiftModal":      "readonly",
+    "DayView":         "readonly",
+    "Stats":           "readonly",
+    "StatsAgg":        "readonly",
+    "Scheduler":       "readonly",
+    "supabase":        "readonly",
+    "sb":              "readonly",
+    "Chart":           "readonly"
+  },
+  "rules": {
+    "no-unused-vars":     ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "no-undef":           "error",
+    "no-var":             "error",
+    "prefer-const":       "warn",
+    "no-implicit-globals":"error",
+    "eqeqeq":             ["error", "smart"],
+    "no-console":         "off",
+    "no-shadow":          "warn",
+    "no-redeclare":       "error",
+    "no-unreachable":     "error",
+    "default-case":       "warn"
+  },
+  "ignorePatterns": [
+    "node_modules/",
+    "supabase/",
+    ".git/"
+  ]
+}
