@@ -798,27 +798,44 @@ html, body {
 /* ---------- Settings tab ---------- */
 
 .settings-view {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 24px;
+  padding: 28px;
   max-width: 720px;
 }
 
+.settings-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-form + .settings-form {
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
 .settings-form h2 {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   font-size: 18px;
 }
 
 .settings-form > p {
-  margin: 0 0 20px;
+  margin: 0 0 24px;
 }
 
 .settings-group {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
-  margin-bottom: 16px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.settings-group:last-of-type {
+  margin-bottom: 0;
 }
 
 .settings-group legend {
@@ -831,34 +848,39 @@ html, body {
 }
 
 .settings-group p {
-  margin: 0 0 12px;
+  margin: 0 0 16px;
   font-size: 12px;
 }
 
 .settings-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.settings-row:last-child {
+  margin-bottom: 0;
 }
 
 .settings-row--two {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 16px;
 }
 
 .settings-form .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.6px;
 }
 
-.settings-form .field input {
+.settings-form .field input,
+.settings-form .field select {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -869,7 +891,8 @@ html, body {
   letter-spacing: 0;
 }
 
-.settings-form .field input:focus {
+.settings-form .field input:focus,
+.settings-form .field select:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -878,13 +901,14 @@ html, body {
   text-transform: none;
   letter-spacing: 0;
   font-size: 11px;
+  margin-top: 2px;
 }
 
 .settings-actions {
   display: flex;
   gap: 12px;
   align-items: center;
-  margin-top: 8px;
+  margin-top: 20px;
 }
 
 .settings-status {

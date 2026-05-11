@@ -150,7 +150,29 @@ window.SettingsView = (function () {
     if (window.Settings?.load) await Settings.load();
     populateForm(Settings.getGroup("optimizer"));
     setStatus("");
+    populateYardDropdown();
   }
+
+  // Populate the Add-driver yard <select> with existing yard display names
+  // from the drivers table. Preserves the current selection if still present.
+  async function populateYardDropdown() {
+    if (!addYardEl) return;
+    try {
+      const yards = await DB.listDistinctYardNames();
+      const current = addYardEl.value;
+      addYardEl.innerHTML =
+        `<option value="" disabled${current ? "" : " selected"}>Pick one…</option>` +
+        yards.map(y => `<option value="${escapeAttr(y)}"${y === current ? " selected" : ""}>${escapeHtml(y)}</option>`).join("");
+    } catch (err) {
+      console.error("Couldn't load yards:", err);
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
 
   function close() {
     if (panel) panel.hidden = true;

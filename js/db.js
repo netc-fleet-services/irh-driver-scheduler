@@ -51,14 +51,33 @@ window.DB = (function () {
   // Insert one row into `drivers`. Used by the Settings tab's "Add
   // driver / dispatcher" form. Caller is expected to have validated the
   // payload; we let Supabase surface NOT NULL / CHECK violations directly.
+  //
+  // `id` has no DB-side default on this shared table, so we assign it
+  // client-side as max(id) + 1.
   async function insertDriver(driver) {
+    const nextId = await nextDriverId();
+    const payload = { id: nextId, ...driver };
     const { data, error } = await window.sb
       .from("drivers")
-      .insert(driver)
+      .insert(payload)
       .select()
       .single();
     if (error) throw error;
     return data;
+  }
+
+  // Highest existing id + 1. Race-prone if two dispatchers add at the same
+  // instant — the loser will get a unique-key error and can retry.
+  async function nextDriverId() {
+    const { data, error } = await window.sb
+      .from("drivers")
+      .select("id")
+      .order("id", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    const max = data && Number.isFinite(Number(data.id)) ? Number(data.id) : 0;
+    return max + 1;
   }
 
   // Distinct companies present in `drivers` (for the company filter dropdown).
@@ -83,6 +102,17 @@ window.DB = (function () {
     const { data, error } = await q;
     if (error) throw error;
 
+    return [...new Set(data.map(r => r.yard).filter(Boolean))].sort();
+  }
+
+  // Distinct yard display names from the `yard` column. Used to populate
+  // the Add-driver form's yard dropdown.
+  async function listDistinctYardNames() {
+    const { data, error } = await window.sb
+      .from("drivers")
+      .select("yard")
+      .not("yard", "is", null);
+    if (error) throw error;
     return [...new Set(data.map(r => r.yard).filter(Boolean))].sort();
   }
 
@@ -200,6 +230,7 @@ window.DB = (function () {
     insertDriver,
     listDistinctCompanies,
     listDistinctYards,
+    listDistinctYardNames,
     listScheduleBetween,
     upsertEntry,
     deleteEntry,

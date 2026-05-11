@@ -597,10 +597,16 @@ window.Scheduler = (function () {
       document.querySelector(".view-toolbar"),
       document.getElementById("week-stats"),
       coverageEl,
-      gridViewEl,
-      ganttViewEl,
     ];
     scheduleChrome.forEach(el => { if (el) el.hidden = isAuxView; });
+    // grid/gantt visibility is driven by the view toggle, not the tab —
+    // in aux views both are hidden, otherwise defer to applyViewToggle().
+    if (isAuxView) {
+      if (gridViewEl)  gridViewEl.hidden  = true;
+      if (ganttViewEl) ganttViewEl.hidden = true;
+    } else {
+      applyViewToggle();
+    }
     // Coverage panel only makes sense for the towing tab.
     if (coverageEl && !isAuxView) {
       coverageEl.hidden = tab !== "drivers";
