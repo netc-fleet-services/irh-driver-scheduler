@@ -74,6 +74,16 @@ window.Utils = (function () {
     return `${h12}:${String(m).padStart(2, "0")} ${period}`;
   }
 
+  // Compact 12-hour clock for tight spaces.
+  // "08:00" -> "8a", "08:30" -> "8:30a", "17:00" -> "5p", "00:00" -> "12a"
+  function formatTime12Compact(t) {
+    if (!t) return "";
+    const [h, m] = t.split(":").map(Number);
+    const period = h >= 12 ? "p" : "a";
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    return m === 0 ? `${h12}${period}` : `${h12}:${String(m).padStart(2, "0")}${period}`;
+  }
+
   // Hours between two "HH:MM[:SS]" times. If end <= start, treat as overnight
   // (rolls into the next day) and add 24h.
   function shiftDurationHours(startTime, endTime) {
@@ -124,6 +134,7 @@ window.Utils = (function () {
     addDays,
     shortDateLabel,
     formatTime12,
+    formatTime12Compact,
     shiftDurationHours,
     formatHours,
     timeToHours,

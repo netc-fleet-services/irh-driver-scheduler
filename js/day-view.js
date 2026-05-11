@@ -14,10 +14,20 @@ window.DayView = (function () {
   const TICK_INTERVAL_H  = 4;
 
   // ---------- DOM refs ----------
-  let modal, titleEl, summaryEl, axisEl, rowsEl, emptyEl, offEl;
+  let modal, titleEl, summaryEl, axisEl, rowsEl, emptyEl, offEl, coverageEl,
+      hideUfpEl, coverageSummaryEl;
   let currentDrivers = new Map();
   let currentEntries = [];
   let currentDate    = null;
+  // Snapshot of the last open() args so the Hide-UFP toggle can re-render
+  // without the caller having to re-invoke open().
+  let lastOpenArgs = null;
+
+  // Persisted "Hide UFP" preference. UFP = the excluded-yard list from
+  // Settings — these drivers don't count toward towing supply, so dispatchers
+  // often want to hide them while sizing coverage.
+  let hideUfp = false;
+  try { hideUfp = localStorage.getItem("dayview.hideUfp") === "1"; } catch (e) {}
 
   // ---------- Drag-resize state ----------
   let drag = null;             // active drag { bar, side, entry, ... }
@@ -29,10 +39,22 @@ window.DayView = (function () {
     modal     = document.getElementById("day-view");
     titleEl   = document.getElementById("day-view-title");
     summaryEl = document.getElementById("day-view-summary");
-    axisEl    = document.getElementById("timeline-axis");
-    rowsEl    = document.getElementById("timeline-rows");
-    emptyEl   = document.getElementById("timeline-empty");
-    offEl     = document.getElementById("timeline-off");
+    axisEl     = document.getElementById("timeline-axis");
+    rowsEl     = document.getElementById("timeline-rows");
+    emptyEl    = document.getElementById("timeline-empty");
+    offEl      = document.getElementById("timeline-off");
+    coverageEl = document.getElementById("timeline-coverage");
+    hideUfpEl  = document.getElementById("day-view-hide-ufp");
+    coverageSummaryEl = document.getElementById("day-view-coverage-summary");
+
+    if (hideUfpEl) {
+      hideUfpEl.checked = hideUfp;
+      hideUfpEl.addEventListener("change", () => {
+        hideUfp = hideUfpEl.checked;
+        try { localStorage.setItem("dayview.hideUfp", hideUfp ? "1" : "0"); } catch (e) {}
+        if (lastOpenArgs) open(lastOpenArgs);
+      });
+    }
 
     // Close handlers
     modal.querySelectorAll("[data-modal-close]").forEach(el => {
@@ -236,6 +258,7 @@ window.DayView = (function () {
   // ---------- Open / close ----------
 
   async function open({ isoDate, drivers, entries }) {
+    lastOpenArgs   = { isoDate, drivers, entries };
     currentDate    = isoDate;
     currentDrivers = new Map(drivers.map(d => [d.id, d]));
 
@@ -248,8 +271,20 @@ window.DayView = (function () {
     // anonymous "Driver #N" rows.
     const inScope = (e) => currentDrivers.has(e.driver_id);
 
+    // Hide UFP toggle: drop entries belonging to excluded-yard drivers from
+    // the rendered rows / summary. Note the coverage strip below intentionally
+    // sees the same filtered set — UFP drivers don't count toward supply
+    // anyway, so this is purely visual.
+    const excludedDriverIds = new Set();
+    if (hideUfp && window.Optimizer?.isInExcludedYard) {
+      for (const d of drivers) {
+        if (Optimizer.isInExcludedYard(d)) excludedDriverIds.add(d.id);
+      }
+    }
+    const notHidden = (e) => !excludedDriverIds.has(e.driver_id);
+
     const todayEntries = entries.filter(e =>
-      e.schedule_date === isoDate && inScope(e)
+      e.schedule_date === isoDate && inScope(e) && notHidden(e)
     );
 
     // Pull yesterday's entries from the passed set if available, otherwise
@@ -264,7 +299,7 @@ window.DayView = (function () {
       }
     }
     const yesterdayOvernight = yesterdayEntries.filter(e =>
-      inScope(e) && e.entry_type === "shift" && e.end_time < e.start_time
+      inScope(e) && notHidden(e) && e.entry_type === "shift" && e.end_time < e.start_time
     );
 
     // Combined set used by click/drag handlers to find the right entry.
@@ -283,14 +318,98 @@ window.DayView = (function () {
     const carryNote = yesterdayOvernight.length
       ? ` · ${yesterdayOvernight.length} carrying over from prev day`
       : "";
+    const hiddenNote = excludedDriverIds.size
+      ? ` · ${excludedDriverIds.size} UFP hidden`
+      : "";
     summaryEl.textContent =
-      `${shifts.length} shift${shifts.length === 1 ? "" : "s"} · ${offs.length} off` + carryNote;
+      `${shifts.length} shift${shifts.length === 1 ? "" : "s"} · ${offs.length} off` + carryNote + hiddenNote;
 
     renderAxis();
     renderShiftRows(shifts, yesterdayOvernight);
     renderOffFooter(offs);
+    renderCoverageStrip(isoDate, drivers, [...todayEntries, ...yesterdayOvernight]);
 
     modal.hidden = false;
+  }
+
+  // Coverage strip: one colored cell per hour showing the supply/demand gap.
+  // Cells use intensity-graded reds (understaffed) and blues (overstaffed) so
+  // dispatchers can scan the day for trouble spots at a glance; "ok" hours
+  // get a faint neutral fill so they're not invisible. Only renders for the
+  // Drivers tab (towing). Async — fetches the baseline lazily.
+  let coverageRenderToken = 0;
+  async function renderCoverageStrip(isoDate, drivers, entries) {
+    if (!coverageEl || !window.Optimizer) return;
+    coverageEl.hidden = true;
+    coverageEl.innerHTML = "";
+    if (coverageSummaryEl) coverageSummaryEl.textContent = "";
+
+    const towingDrivers = Optimizer.filterSupplyDrivers(drivers);
+    if (towingDrivers.length === 0) return;
+
+    const myToken = ++coverageRenderToken;
+    let baseline;
+    try {
+      baseline = await Optimizer.loadBaseline();
+    } catch (err) {
+      console.warn("Optimizer baseline load failed:", err);
+      return;
+    }
+    if (myToken !== coverageRenderToken) return;
+
+    const gaps = Optimizer.computeGaps(entries, towingDrivers, baseline, isoDate, isoDate);
+    if (gaps.length === 0) return;
+
+    let totalUnder = 0, totalOver = 0;
+    let worstUnder = null, worstOver = null;
+
+    const cells = gaps.map(g => {
+      const leftPct  = pctFromHours(g.hour);
+      const rightPct = pctFromHours(g.hour + 1);
+      const widthPct = rightPct - leftPct;
+      const sign = g.gap > 0 ? "+" : "";
+      let cls;
+      if (g.status === "under") {
+        cls = "tl-cov--under";
+        totalUnder++;
+        if (!worstUnder || g.gap < worstUnder.gap) worstUnder = g;
+      } else if (g.status === "over") {
+        cls = "tl-cov--over";
+        totalOver++;
+        if (!worstOver || g.gap > worstOver.gap) worstOver = g;
+      } else {
+        cls = "tl-cov--ok";
+      }
+      // Map |gap| of 0..4 onto an opacity ramp so worse hours read darker.
+      // "ok" gets a flat low value — we still want it visible.
+      const mag = Math.min(1, Math.abs(g.gap) / 4);
+      const opacity = g.status === "ok" ? 0.08 : (0.22 + mag * 0.50);
+      const label = `${sign}${g.gap.toFixed(1)}`;
+      const tip = `${Optimizer.formatHour12(g.hour)}: ${g.demandCalls.toFixed(1)} avg calls/hr · ${g.supply} on shift · gap ${sign}${g.gap.toFixed(1)}`;
+      return `<div class="tl-cov ${cls}" style="left:${leftPct}%;width:${widthPct}%;--cov-opacity:${opacity.toFixed(2)}" title="${tip.replace(/"/g, "&quot;")}">${label}</div>`;
+    });
+
+    coverageEl.innerHTML = cells.join("");
+    coverageEl.hidden = false;
+
+    if (coverageSummaryEl) {
+      if (totalUnder === 0 && totalOver === 0) {
+        coverageSummaryEl.textContent = "Coverage on target all day.";
+      } else {
+        const parts = [];
+        if (totalUnder) {
+          parts.push(
+            `${totalUnder}h under (worst ${worstUnder.gap.toFixed(1)} @ ${Optimizer.formatHour12(worstUnder.hour)})`
+          );
+        }
+        if (totalOver) {
+          parts.push(
+            `${totalOver}h over (+${worstOver.gap.toFixed(1)} @ ${Optimizer.formatHour12(worstOver.hour)})`
+          );
+        }
+        coverageSummaryEl.textContent = parts.join(" · ");
+      }
+    }
   }
 
   function close() {

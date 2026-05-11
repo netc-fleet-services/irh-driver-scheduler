@@ -49,6 +49,8 @@
   Stats.mount();
   PrintSchedule.mount();
   Scheduler.mount();
+  if (window.Historical?.mount) Historical.mount();
+  if (window.SettingsView?.mount) SettingsView.mount();
 
   // Auth state -> view switching
   let mountedScheduler = false;
@@ -59,6 +61,12 @@
       signOutBtn.hidden = false;
       userEmailEl.textContent = session.user.email;
       setStatus("ok", "connected");
+
+      // Load shared settings before first paint so optimizer reads from
+      // the saved values (not just APP_CONFIG defaults).
+      if (window.Settings?.load) {
+        try { await Settings.load(); } catch (e) { console.warn("Settings load failed", e); }
+      }
 
       if (!mountedScheduler) {
         await Scheduler.render();
