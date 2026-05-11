@@ -48,6 +48,19 @@ window.DB = (function () {
     return data.filter(d => !excluded.has(String(d.name || "").trim().toLowerCase()));
   }
 
+  // Insert one row into `drivers`. Used by the Settings tab's "Add
+  // driver / dispatcher" form. Caller is expected to have validated the
+  // payload; we let Supabase surface NOT NULL / CHECK violations directly.
+  async function insertDriver(driver) {
+    const { data, error } = await window.sb
+      .from("drivers")
+      .insert(driver)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
   // Distinct companies present in `drivers` (for the company filter dropdown).
   // Backed by the scheduler_distinct_companies view (see migration 7).
   async function listDistinctCompanies() {
@@ -184,6 +197,7 @@ window.DB = (function () {
 
   return {
     listDrivers,
+    insertDriver,
     listDistinctCompanies,
     listDistinctYards,
     listScheduleBetween,

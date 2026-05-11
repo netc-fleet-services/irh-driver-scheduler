@@ -149,7 +149,7 @@
         <button type="button" class="view-btn" data-view="gantt">Gantt</button>
       </div>
       <button type="button" class="btn btn--ghost" id="print-btn"
-              title="Print a schedule">Print&hellip;</button>
+              title="Export the schedule (print or CSV)">Export&hellip;</button>
     </div>
 
     <!-- Schedule grid -->
@@ -235,16 +235,17 @@
               <small class="muted">How many calls one driver can handle per hour. Default 1.0.</small>
             </label>
           </div>
-          <div class="settings-row settings-row--two">
+          <div class="settings-row">
             <label class="field">
-              <span>Understaffed cutoff</span>
-              <input type="number" id="setting-under" step="0.1" max="0" />
-              <small class="muted">Flag red when gap ≤ this. Default −1.0.</small>
-            </label>
-            <label class="field">
-              <span>Overstaffed cutoff</span>
-              <input type="number" id="setting-over" step="0.1" min="0" />
-              <small class="muted">Flag blue when gap ≥ this. Default +2.0.</small>
+              <span>Coverage sensitivity</span>
+              <select id="setting-sensitivity">
+                <option value="very-relaxed">Very relaxed</option>
+                <option value="relaxed">Relaxed</option>
+                <option value="balanced">Balanced (default)</option>
+                <option value="aggressive">Aggressive</option>
+                <option value="very-aggressive">Very aggressive — flag any imbalance</option>
+              </select>
+              <small class="muted">How readily Coverage flags hours as under- or overstaffed.</small>
             </label>
           </div>
           <div class="settings-row settings-row--two">
@@ -283,6 +284,76 @@
           <button type="button" class="btn btn--ghost" id="setting-reset">Reset to defaults</button>
           <button type="submit" class="btn btn--primary" id="setting-save">Save</button>
           <span class="settings-status" id="setting-status"></span>
+        </div>
+      </form>
+
+      <!-- Add driver / dispatcher form. Independent of the optimizer form
+           above so its submit doesn't trip the Save handler. -->
+      <form class="settings-form" id="add-driver-form">
+        <h2>Add driver / dispatcher</h2>
+        <p class="muted">
+          Inserts a new row into the <code>drivers</code> table. All fields
+          required. New rows start as active.
+        </p>
+
+        <fieldset class="settings-group">
+          <legend>Identity</legend>
+          <div class="settings-row settings-row--two">
+            <label class="field">
+              <span>Name</span>
+              <input type="text" id="add-driver-name" required autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Function</span>
+              <select id="add-driver-function" required>
+                <option value="" disabled selected>Pick one…</option>
+                <option value="LDT">LDT</option>
+                <option value="HDT">HDT</option>
+                <option value="Transport">Transport</option>
+                <option value="Road Service">Road Service</option>
+                <option value="Dispatch">Dispatch</option>
+                <option value="Office Manager">Office Manager</option>
+              </select>
+            </label>
+          </div>
+          <div class="settings-row settings-row--two">
+            <label class="field">
+              <span>Company</span>
+              <input type="text" id="add-driver-company" required value="Interstate" />
+            </label>
+            <label class="field">
+              <span>IRH driver number</span>
+              <input type="text" id="add-driver-irhnum" required autocomplete="off" />
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend>Location &amp; equipment</legend>
+          <div class="settings-row settings-row--two">
+            <label class="field">
+              <span>IRH yard number</span>
+              <input type="text" id="add-driver-irhyard" required autocomplete="off"
+                     placeholder="1, 5, 6, UFP, Dispatch, …" />
+              <small class="muted">Supports comma-separated multi-yard, e.g. <code>1,6</code>.</small>
+            </label>
+            <label class="field">
+              <span>Yard</span>
+              <input type="text" id="add-driver-yard" required autocomplete="off" />
+            </label>
+          </div>
+          <div class="settings-row">
+            <label class="field">
+              <span>Truck</span>
+              <input type="text" id="add-driver-truck" required autocomplete="off" />
+            </label>
+          </div>
+        </fieldset>
+
+        <div class="settings-actions">
+          <button type="button" class="btn btn--ghost" id="add-driver-reset">Clear</button>
+          <button type="submit" class="btn btn--primary" id="add-driver-submit">Add to roster</button>
+          <span class="settings-status" id="add-driver-status"></span>
         </div>
       </form>
     </section>
@@ -418,21 +489,26 @@
     </form>
   </div>
 
-  <!-- Print picker -->
+  <!-- Export picker -->
   <div id="print-modal" class="modal" hidden>
     <div class="modal__backdrop" data-modal-close></div>
     <form class="modal__panel" id="print-form">
       <header class="modal__header">
-        <h2>Print schedule</h2>
+        <h2>Export schedule</h2>
         <button type="button" class="btn btn--ghost modal__close" data-modal-close aria-label="Close">&times;</button>
       </header>
       <div class="modal__body">
+        <div class="entry-type">
+          <label><input type="radio" name="print-output" value="print" checked /> <span>Print preview</span></label>
+          <label><input type="radio" name="print-output" value="csv" /> <span>CSV download</span></label>
+        </div>
+
         <div class="entry-type">
           <label><input type="radio" name="print-tab" value="drivers" checked /> <span>Drivers</span></label>
           <label><input type="radio" name="print-tab" value="dispatchers" /> <span>Dispatchers</span></label>
         </div>
 
-        <div class="entry-type">
+        <div class="entry-type" id="print-format-group">
           <label><input type="radio" name="print-format" value="table" checked /> <span>Table (one cell per day)</span></label>
           <label><input type="radio" name="print-format" value="gantt" /> <span>Gantt (timeline bars)</span></label>
         </div>
