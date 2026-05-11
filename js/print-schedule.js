@@ -1,13 +1,16 @@
-// Print picker.
+// Export picker.
 // Opens a small modal that lets the user pick:
-//   * which roster to print (drivers vs dispatchers)
-//   * how many days starting from which date (default Mon of current week, 7 days)
-// On submit, opens a new window with a print-formatted schedule and triggers
-// the browser print dialog.
+//   * output: print preview (opens a styled window) or CSV download
+//   * roster: drivers vs dispatchers
+//   * date window: how many days starting from which date (default Mon, 7d)
+//   * yard filter (mirrors the scheduler's yard select)
+// Print path opens a new window with table/gantt HTML and triggers the
+// browser print dialog. CSV path emits a long-format file (one row per
+// scheduled entry) and triggers a download.
 
 window.PrintSchedule = (function () {
 
-  let modal, form, tabRadios, formatRadios, startEl, daysEl, yardEl, errorEl, submitEl, openBtn;
+  let modal, form, tabRadios, formatRadios, outputRadios, formatGroup, startEl, daysEl, yardEl, errorEl, submitEl, openBtn;
 
   // ---------- Mount ----------
 
@@ -22,8 +25,11 @@ window.PrintSchedule = (function () {
     submitEl = document.getElementById("print-submit");
     tabRadios    = form.querySelectorAll('input[name="print-tab"]');
     formatRadios = form.querySelectorAll('input[name="print-format"]');
+    outputRadios = form.querySelectorAll('input[name="print-output"]');
+    formatGroup  = document.getElementById("print-format-group");
 
     if (openBtn) openBtn.addEventListener("click", open);
+    for (const r of outputRadios) r.addEventListener("change", syncOutputUi);
 
     modal.querySelectorAll("[data-modal-close]").forEach(el =>
       el.addEventListener("click", close),
@@ -62,8 +68,20 @@ window.PrintSchedule = (function () {
     const currentYard = (window.Scheduler && Scheduler.getYard?.()) || "";
     yardEl.value = currentYard;
 
+    // Default output to print preview each time the modal opens.
+    for (const r of outputRadios) r.checked = (r.value === "print");
+    syncOutputUi();
+
     modal.hidden = false;
     setTimeout(() => startEl.focus(), 0);
+  }
+
+  // Toggle Format group + submit button label based on the chosen output.
+  // Print needs Table vs Gantt; CSV ignores it.
+  function syncOutputUi() {
+    const output = getSelectedOutput();
+    if (formatGroup) formatGroup.style.display = (output === "csv") ? "none" : "";
+    submitEl.textContent = (output === "csv") ? "Download CSV" : "Open print preview";
   }
 
   function close() {
@@ -77,6 +95,7 @@ window.PrintSchedule = (function () {
     e.preventDefault();
     clearError();
 
+    const output = getSelectedOutput();
     const tab    = getSelectedTab();
     const format = getSelectedFormat();
     const start  = startEl.value;
@@ -84,18 +103,25 @@ window.PrintSchedule = (function () {
     const yard   = yardEl.value || "";
     if (!start) return showError("Pick a start date.");
 
+    const originalLabel = submitEl.textContent;
     submitEl.disabled = true;
     submitEl.textContent = "Loading…";
     try {
-      const html = await buildPrintDoc({ tab, format, isoStart: start, days, yard });
-      openPrintWindow(html);
+      if (output === "csv") {
+        const data = await loadScheduleData({ tab, isoStart: start, days, yard });
+        const csv  = buildCsv(data);
+        downloadCsv(csvFilename({ tab, isoStart: start, days, yard }), csv);
+      } else {
+        const html = await buildPrintDoc({ tab, format, isoStart: start, days, yard });
+        openPrintWindow(html);
+      }
       close();
     } catch (err) {
-      console.error("Print build failed:", err);
-      showError(err.message || "Couldn't build the print sheet.");
+      console.error("Export build failed:", err);
+      showError(err.message || "Couldn't build the export.");
     } finally {
       submitEl.disabled = false;
-      submitEl.textContent = "Open print preview";
+      submitEl.textContent = originalLabel;
     }
   }
 
@@ -106,6 +132,10 @@ window.PrintSchedule = (function () {
   function getSelectedFormat() {
     for (const r of formatRadios) if (r.checked) return r.value;
     return "table";
+  }
+  function getSelectedOutput() {
+    for (const r of outputRadios) if (r.checked) return r.value;
+    return "print";
   }
 
   // Mirror the scheduler's already-populated yard select. Falls back to just
@@ -123,7 +153,10 @@ window.PrintSchedule = (function () {
 
   // ---------- Data fetch + HTML build ----------
 
-  async function buildPrintDoc({ tab, format, isoStart, days, yard }) {
+  // Shared data prep for both print and CSV. Returns everything either path
+  // needs: the sorted driver list, the day window, the by-(driver,date) index,
+  // plus a few labels for titles/subtitles.
+  async function loadScheduleData({ tab, isoStart, days, yard }) {
     const tabDef = (APP_CONFIG.tabs || []).find(t => t.id === tab);
     const functions = tabDef ? tabDef.functions : null;
 
@@ -175,14 +208,22 @@ window.PrintSchedule = (function () {
     const title    = `${tabLabel} Schedule — ${rangeLabel}`;
     const subtitle = `${yardLabel} · ${sorted.length} ${tabLabel.toLowerCase()}${sorted.length === 1 ? "" : "s"} · printed ${printedAt}`;
 
+    return { tab, sorted, entries, dates, byKey, days, tabLabel, title, subtitle, isoStart, isoEnd };
+  }
+
+  async function buildPrintDoc({ tab, format, isoStart, days, yard }) {
+    const data = await loadScheduleData({ tab, isoStart, days, yard });
+
     // Coverage notes (drivers tab only). Optional — silently skipped if the
     // baseline isn't available.
-    const coverageHtml = await buildCoverageBlock({ tab, drivers: sorted, entries, dates });
+    const coverageHtml = await buildCoverageBlock({
+      tab: data.tab, drivers: data.sorted, entries: data.entries, dates: data.dates,
+    });
 
     if (format === "gantt") {
-      return buildGanttDoc({ title, subtitle, sorted, dates, byKey, days, coverageHtml });
+      return buildGanttDoc({ ...data, coverageHtml });
     }
-    return buildTableDoc({ title, subtitle, sorted, dates, byKey, days, coverageHtml });
+    return buildTableDoc({ ...data, coverageHtml });
   }
 
   // Build the "Coverage notes" block: top understaffed/overstaffed hours for
@@ -514,6 +555,68 @@ window.PrintSchedule = (function () {
   ${coverageHtml || ""}
 </body>
 </html>`;
+  }
+
+  // ---------- CSV ----------
+
+  // Long-format CSV: one row per scheduled entry. Drivers with no entries in
+  // the window are omitted (matches what Excel-style consumers usually want).
+  function buildCsv({ tab, sorted, dates, byKey }) {
+    const header = [
+      "Name", "Number", "Function", "Yard",
+      "Date", "Day",
+      "Type", "Start", "End", "Off reason", "Notes",
+    ];
+    const rows = [header];
+
+    for (const d of sorted) {
+      for (const date of dates) {
+        const iso = Utils.toIsoDate(date);
+        const dow = date.toLocaleDateString(undefined, { weekday: "short" });
+        const list = byKey.get(`${d.id}|${iso}`) || [];
+        if (!list.length) continue;
+        for (const e of list) {
+          rows.push([
+            d.name || "",
+            d.irh_driver_number || d.id,
+            d.function || "",
+            d.irh_yard_number || "",
+            iso,
+            dow,
+            e.entry_type || "",
+            e.entry_type === "shift" ? (e.start_time || "") : "",
+            e.entry_type === "shift" ? (e.end_time   || "") : "",
+            e.entry_type === "off"   ? (e.off_reason || "") : "",
+            // Strip newlines so a stray note doesn't break the row.
+            (e.notes || "").replace(/\r?\n/g, " "),
+          ]);
+        }
+      }
+    }
+    return rows.map(r => r.map(csvCell).join(",")).join("\r\n");
+  }
+
+  function csvCell(v) {
+    const s = v == null ? "" : String(v);
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  function csvFilename({ tab, isoStart, days, yard }) {
+    const yardPart = yard ? `_yard-${yard}` : "";
+    return `${tab}-schedule_${isoStart}_${days}d${yardPart}.csv`;
+  }
+
+  function downloadCsv(filename, csv) {
+    // BOM so Excel detects UTF-8 (otherwise it mangles accented names).
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   // ---------- Helpers ----------

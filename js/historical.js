@@ -17,6 +17,8 @@ window.Historical = (function () {
   let mounted = false;
   let chartHourly = null;
   let chartDaily  = null;
+  let chartMonthly = null;
+  const MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   let state = { month: "" };  // "" = all months
 
   // ---------- Mount ----------
@@ -76,6 +78,11 @@ window.Historical = (function () {
           <div class="historical__chart-wrap"><canvas id="historical-daily"></canvas></div>
         </div>
       </section>
+      <section class="historical__section">
+        <h3>Calls by month</h3>
+        <p class="muted">Total avg calls per week, one point per month. Click a point to filter; click it again to clear.</p>
+        <div class="historical__chart-wrap"><canvas id="historical-monthly"></canvas></div>
+      </section>
     `;
     sectionsEl.dataset.scaffold = "1";
   }
@@ -99,6 +106,7 @@ window.Historical = (function () {
     renderHeatmap(grid);
     renderHourlyChart(grid);
     renderDailyChart(grid);
+    renderMonthlyChart();
   }
 
   function currentGrid() {
@@ -184,6 +192,58 @@ window.Historical = (function () {
         }],
       },
       options: barChartOpts(),
+    });
+  }
+
+  // Month-over-month: line chart of total weekly call volume per calendar
+  // month. Always pulls from byMonth (independent of the month filter) so
+  // dispatchers can see seasonal trends; the currently selected month gets
+  // an amber dot, the rest blue.
+  function renderMonthlyChart() {
+    const cached = Optimizer.getCachedBaseline();
+    if (!cached) return;
+    const selected = state.month ? Number(state.month) : null;
+    const data = MONTH_LABELS.map((_, i) => {
+      const g = cached.byMonth.get(i + 1);
+      return g ? sumGrid(g) : 0;
+    });
+    const accent = "rgba(245, 158, 11, 1)";
+    const base   = "rgba(59, 130, 246, 1)";
+    chartMonthly = upsertChart(chartMonthly, "historical-monthly", {
+      type: "line",
+      data: {
+        labels: MONTH_LABELS,
+        datasets: [{
+          label: "Avg calls/week",
+          data,
+          borderColor: base,
+          backgroundColor: "rgba(59, 130, 246, 0.15)",
+          fill: true,
+          tension: 0.35,
+          pointBackgroundColor: MONTH_LABELS.map((_, i) => (i + 1 === selected ? accent : base)),
+          pointBorderColor:     MONTH_LABELS.map((_, i) => (i + 1 === selected ? accent : base)),
+          pointRadius:          MONTH_LABELS.map((_, i) => (i + 1 === selected ? 6 : 3)),
+          pointHoverRadius:     MONTH_LABELS.map((_, i) => (i + 1 === selected ? 8 : 5)),
+          borderWidth: 2,
+        }],
+      },
+      options: {
+        ...barChartOpts(),
+        // Click a point to filter to that month; click the same point again
+        // to clear the filter and go back to "All months".
+        onClick: (evt, elements) => {
+          if (!elements || !elements.length) return;
+          const idx = elements[0].index;
+          const m = String(idx + 1);
+          state.month = (state.month === m) ? "" : m;
+          if (monthEl) monthEl.value = state.month;
+          paint();
+        },
+        onHover: (evt, elements) => {
+          const target = evt?.native?.target;
+          if (target) target.style.cursor = elements.length ? "pointer" : "default";
+        },
+      },
     });
   }
 

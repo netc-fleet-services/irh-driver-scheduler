@@ -72,8 +72,10 @@ window.APP_CONFIG = {
     callsPerDriverPerHour: 0.6,
 
     // gap = supply - demand_in_drivers. Negative = short.
+    // These defaults match the "Balanced" preset in the Settings tab; the UI
+    // exposes a single sensitivity dropdown that expands to these two fields.
     // Flag understaffed when gap is at or below this value.
-    understaffedThreshold: -1.0,
+    understaffedThreshold: -1.5,
     // Flag overstaffed when gap is at or above this value.
     overstaffedThreshold:   2.0,
 

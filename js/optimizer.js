@@ -60,10 +60,22 @@ window.Optimizer = (function () {
     if (cached) return cached;
     if (inflight) return inflight;
     inflight = (async () => {
-      const { data, error } = await window.sb
-        .from("call_volume_baseline")
-        .select("day_of_week, hour, month, avg_calls");
-      if (error) throw error;
+      // PostgREST applies a server-side row cap (db-max-rows, default 1000
+      // on Supabase) and the baseline has 168 × 13 (12 months + aggregate) =
+      // 2184 rows. A single .range() can't bypass that cap, so we paginate
+      // until a short page comes back.
+      const PAGE = 1000;
+      const data = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data: page, error } = await window.sb
+          .from("call_volume_baseline")
+          .select("day_of_week, hour, month, avg_calls")
+          .range(from, from + PAGE - 1);
+        if (error) throw error;
+        if (!page || page.length === 0) break;
+        data.push(...page);
+        if (page.length < PAGE) break;
+      }
 
       const agg = Array.from({ length: 7 }, () => new Array(24).fill(0));
       const byMonth = new Map();
