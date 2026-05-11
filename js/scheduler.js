@@ -45,7 +45,9 @@ window.Scheduler = (function () {
       showInactiveEl, companyEl, yardEl, countEl, searchEl, tabBarEl, statsEl,
       copyLastBtn, copyNextBtn, clearWeekBtn, undoBtn,
       viewToggleEl, gridViewEl, ganttViewEl, ganttAxisEl, ganttBodyEl,
-      daysPickerEl;
+      daysPickerEl,
+      coverageEl, coverageBodyEl, coverageToggleEl, coverageSummaryEl,
+      coverageUnderEl, coverageOverEl;
 
   // Snapshot of the most recent bulk action so we can undo it.
   // Shape: { driverIds, isoStart, isoEnd, snapshot: [rows], label }
@@ -81,6 +83,34 @@ window.Scheduler = (function () {
     ganttBodyEl    = document.getElementById("gantt-body");
     daysPickerEl   = document.getElementById("days-picker");
 
+    coverageEl         = document.getElementById("coverage-panel");
+    coverageBodyEl     = document.getElementById("coverage-body");
+    coverageToggleEl   = document.getElementById("coverage-toggle");
+    coverageSummaryEl  = document.getElementById("coverage-summary");
+    coverageUnderEl    = document.getElementById("coverage-under");
+    coverageOverEl     = document.getElementById("coverage-over");
+
+    if (coverageToggleEl) {
+      coverageToggleEl.addEventListener("click", () => {
+        const expanded = coverageToggleEl.getAttribute("aria-expanded") === "true";
+        coverageToggleEl.setAttribute("aria-expanded", String(!expanded));
+        coverageBodyEl.hidden = expanded;
+      });
+    }
+
+    if (coverageEl) {
+      coverageEl.addEventListener("click", (e) => {
+        const item = e.target.closest(".coverage__item");
+        if (!item || !item.dataset.iso) return;
+        const isoDate = item.dataset.iso;
+        DayView.open({
+          isoDate,
+          drivers: state.drivers,
+          entries: state.allEntries,
+        });
+      });
+    }
+
     renderDaysPicker();
     daysPickerEl.addEventListener("change", () => {
       state.viewDays = Number(daysPickerEl.value) || 7;
@@ -112,6 +142,10 @@ window.Scheduler = (function () {
     ganttBodyEl.addEventListener("pointerdown", onGanttPointerDown);
     ganttAxisEl.addEventListener("click", onGanttAxisClick);
 
+    // Live "now" line: re-position once per minute. Cheap (no DB), and quietly
+    // hides itself if "now" falls outside the visible week.
+    setInterval(updateGanttNowLine, 60 * 1000);
+
     renderTabs();
     tabBarEl.addEventListener("click", (e) => {
       const btn = e.target.closest(".tab[data-tab]");
@@ -122,10 +156,19 @@ window.Scheduler = (function () {
       if (searchEl) searchEl.value = "";
       renderTabs();
       applyTabView();
-      if (state.activeTab === "stats") {
+      const tab = state.activeTab;
+      // Close any panel currently open before switching scenes.
+      if (typeof Stats !== "undefined")       Stats.close();
+      if (window.Historical?.close)           Historical.close();
+      if (window.SettingsView?.close)         SettingsView.close();
+
+      if (tab === "stats") {
         if (typeof Stats !== "undefined") Stats.open();
+      } else if (tab === "historical") {
+        if (window.Historical?.open) Historical.open();
+      } else if (tab === "settings") {
+        if (window.SettingsView?.open) SettingsView.open();
       } else {
-        if (typeof Stats !== "undefined") Stats.close();
         loadYards().then(() => render());
       }
     });
@@ -542,19 +585,26 @@ window.Scheduler = (function () {
     }).join("");
   }
 
-  // Toggle visibility of the schedule UI vs the stats panel based on active tab.
+  // Toggle visibility of the schedule UI vs auxiliary tabs (stats, historical,
+  // settings). The schedule chrome is shared across drivers/dispatchers.
   function applyTabView() {
-    const onStats = state.activeTab === "stats";
-    // Hide the schedule controls + grid/gantt when on Stats.
+    const tab = state.activeTab;
+    const isAuxView = (tab === "stats" || tab === "historical" || tab === "settings");
+
     const scheduleChrome = [
       document.querySelector(".week-nav"),
       document.querySelector(".filters"),
       document.querySelector(".view-toolbar"),
       document.getElementById("week-stats"),
+      coverageEl,
       gridViewEl,
       ganttViewEl,
     ];
-    scheduleChrome.forEach(el => { if (el) el.hidden = onStats; });
+    scheduleChrome.forEach(el => { if (el) el.hidden = isAuxView; });
+    // Coverage panel only makes sense for the towing tab.
+    if (coverageEl && !isAuxView) {
+      coverageEl.hidden = tab !== "drivers";
+    }
   }
 
   // ---------- Render ----------
@@ -655,6 +705,11 @@ window.Scheduler = (function () {
     // Stats: total scheduled hours for the active tab's drivers across 3 weeks.
     renderWeekStats(allEntries, drivers, week, lastWeek, nextWeek);
 
+    // Coverage panel (Drivers tab only). Uses the FULL roster, not the
+    // search-filtered subset — coverage is a system-wide metric, not a
+    // function of what's currently typed in the search box.
+    renderCoveragePanel(state.allDrivers || [], allEntries, isoStart, isoEnd);
+
     if (!filtered.length) {
       body.innerHTML = "";
       emptyEl.hidden = false;
@@ -707,7 +762,8 @@ window.Scheduler = (function () {
                 <span class="gantt__day-dom">${dom}</span>
               </div>`;
     }).join("");
-    ganttAxisEl.innerHTML = labels;
+    ganttAxisEl.innerHTML = labels +
+      `<div class="gantt__now-line" data-now-line hidden></div>`;
 
     // Group entries by driver
     const byDriver = new Map();
@@ -737,6 +793,35 @@ window.Scheduler = (function () {
       const hours = computeDriverWeekHours(d.id, week, byKey);
       return renderGanttRow(d, weekStartMs, driverEntries, hours, offStartByEntryId);
     }).join("");
+
+    updateGanttNowLine();
+  }
+
+  // Live "now" indicator: vertical line at the current time. Reads the gantt's
+  // current week start + total hours, computes a percentage, and toggles each
+  // [data-now-line] element. Cheap — runs once on render and once per minute.
+  function updateGanttNowLine() {
+    const lines = document.querySelectorAll("[data-now-line]");
+    if (!lines.length) return;
+
+    const base = new Date(state.anchorDate);
+    base.setHours(0, 0, 0, 0);
+    const weekStartMs = base.getTime();
+    const totalHours  = ganttHours();
+    const visibleH    = state.viewDays * 24;
+    const nowOffsetH  = (Date.now() - weekStartMs) / 3600000;
+
+    if (nowOffsetH < 0 || nowOffsetH > visibleH) {
+      lines.forEach(el => { el.hidden = true; });
+      return;
+    }
+    const leftPct = (nowOffsetH / totalHours) * 100;
+    const tip     = `Now · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    lines.forEach(el => {
+      el.hidden = false;
+      el.style.left = leftPct + "%";
+      el.title = tip;
+    });
   }
 
   // For each OFF entry on day N, look at the driver's day-(N-1) shifts. If
@@ -795,11 +880,13 @@ window.Scheduler = (function () {
     // yard, weekly hours, and inactive flag identically. The outer container
     // class differs to keep the gantt's column-width layout.
     const isInactive = driver.active === false;
+    const isExcludedYard = window.Optimizer?.isInExcludedYard?.(driver) || false;
     const hoursBadge = hours > 0
       ? `<span class="driver-hours" title="Scheduled this week">${escapeHtml(Utils.formatHours(hours))}</span>`
       : "";
     const driverInfo = `
-      <div class="gantt-row__driver ${isInactive ? "is-inactive" : ""}" data-driver-id="${driver.id}">
+      <div class="gantt-row__driver ${isInactive ? "is-inactive" : ""} ${isExcludedYard ? "is-excluded-yard" : ""}" data-driver-id="${driver.id}"
+           ${isExcludedYard ? 'title="Yard is excluded from towing-supply count (Settings → Excluded yards)"' : ""}>
         <div class="driver-name">
           ${escapeHtml(driver.name || "(unnamed)")}
           ${hoursBadge}
@@ -817,6 +904,7 @@ window.Scheduler = (function () {
         <div class="gantt-row__track">
           ${dayLines}
           ${bars}
+          <div class="gantt__now-line gantt__now-line--track" data-now-line hidden></div>
         </div>
       </div>
     `;
@@ -861,6 +949,8 @@ window.Scheduler = (function () {
 
     const start = Utils.formatTime12(entry.start_time);
     const end   = Utils.formatTime12(entry.end_time);
+    const startShort = Utils.formatTime12Compact(entry.start_time);
+    const endShort   = Utils.formatTime12Compact(entry.end_time);
     const overnight = endH > 24;
 
     return `
@@ -870,7 +960,8 @@ window.Scheduler = (function () {
            data-day-offset="${dayOffsetH}"
            title="${start} - ${end}${overnight ? " (next day)" : ""}">
         <div class="gantt-bar__handle gantt-bar__handle--left"  data-side="left"  title="Drag to change start"></div>
-        <span class="gantt-bar__label">${start}</span>
+        <span class="gantt-bar__label gantt-bar__label--start">${startShort}</span>
+        <span class="gantt-bar__label gantt-bar__label--end">${endShort}${overnight ? "+" : ""}</span>
         <div class="gantt-bar__handle gantt-bar__handle--right" data-side="right" title="Drag to change end"></div>
       </div>
     `;
@@ -1232,12 +1323,14 @@ window.Scheduler = (function () {
 
   function renderDriverRow(driver, week, byKey) {
     const isInactive = driver.active === false;
+    const isExcludedYard = window.Optimizer?.isInExcludedYard?.(driver) || false;
     const weeklyHours = computeDriverWeekHours(driver.id, week, byKey);
     const hoursBadge = weeklyHours > 0
       ? `<span class="driver-hours" title="Scheduled this week">${escapeHtml(Utils.formatHours(weeklyHours))}</span>`
       : "";
     const driverCell = `
-      <div class="cell cell--driver ${isInactive ? "is-inactive" : ""}" data-driver-id="${driver.id}">
+      <div class="cell cell--driver ${isInactive ? "is-inactive" : ""} ${isExcludedYard ? "is-excluded-yard" : ""}" data-driver-id="${driver.id}"
+           ${isExcludedYard ? 'title="Yard is excluded from towing-supply count (Settings → Excluded yards)"' : ""}>
         <div class="driver-name">
           ${escapeHtml(driver.name || "(unnamed)")}
           ${hoursBadge}
@@ -1369,6 +1462,87 @@ window.Scheduler = (function () {
     }
   }
 
+  // ---------- Coverage panel ----------
+
+  // Inflight token so a slow baseline fetch doesn't overwrite a newer paint.
+  let coverageRenderToken = 0;
+
+  async function renderCoveragePanel(drivers, allEntries, isoStart, isoEnd) {
+    if (!coverageEl) return;
+    if (state.activeTab !== "drivers") {
+      coverageEl.hidden = true;
+      return;
+    }
+    coverageEl.hidden = false;
+
+    const myToken = ++coverageRenderToken;
+    coverageSummaryEl.textContent = "loading historical baseline…";
+    coverageUnderEl.innerHTML = "";
+    coverageOverEl.innerHTML = "";
+
+    let baseline;
+    try {
+      baseline = await Optimizer.loadBaseline();
+    } catch (err) {
+      if (myToken !== coverageRenderToken) return;
+      coverageSummaryEl.textContent = "couldn't load baseline";
+      console.warn("Optimizer baseline load failed:", err);
+      return;
+    }
+    if (myToken !== coverageRenderToken) return;
+
+    const towingDrivers = Optimizer.filterSupplyDrivers(drivers);
+
+    // Use the cached 3-week window we already fetched, narrowed to visible week.
+    const entries = allEntries.filter(e =>
+      e.schedule_date >= isoStart && e.schedule_date <= isoEnd
+    );
+    // Plus any overnight shifts from the day before the window (their tail
+    // bleeds into the first morning).
+    const dayBeforeIso = Utils.toIsoDate(
+      Utils.addDays(Utils.fromIsoDate(isoStart), -1)
+    );
+    const carryIns = allEntries.filter(e =>
+      e.schedule_date === dayBeforeIso &&
+      e.entry_type === "shift" &&
+      e.end_time < e.start_time
+    );
+
+    const gaps = Optimizer.computeGaps(
+      [...entries, ...carryIns],
+      towingDrivers,
+      baseline,
+      isoStart,
+      isoEnd,
+    );
+    const { under, over } = Optimizer.topSuggestions(gaps);
+
+    const totalUnder = gaps.filter(g => g.status === "under").length;
+    const totalOver  = gaps.filter(g => g.status === "over").length;
+    coverageSummaryEl.textContent =
+      `${totalUnder} understaffed · ${totalOver} overstaffed (LDT+HDT vs historical avg)`;
+
+    coverageUnderEl.innerHTML = under.length
+      ? under.map(g => coverageItemHtml(g)).join("")
+      : `<li class="coverage__empty">No flagged hours this week.</li>`;
+    coverageOverEl.innerHTML = over.length
+      ? over.map(g => coverageItemHtml(g)).join("")
+      : `<li class="coverage__empty">No flagged hours this week.</li>`;
+  }
+
+  function coverageItemHtml(g) {
+    const cls = g.status === "under" ? "coverage__chip--under" : "coverage__chip--over";
+    const sign = g.gap > 0 ? "+" : "";
+    const chip = `${sign}${g.gap.toFixed(1)}`;
+    const text = Utils.escapeHtml(Optimizer.suggestionText(g));
+    return (
+      `<li class="coverage__item" data-iso="${g.isoDate}" title="Click to open day detail">` +
+        `<span class="coverage__chip ${cls}">${chip}</span>` +
+        `<span class="coverage__text">${text}</span>` +
+      `</li>`
+    );
+  }
+
   const escapeHtml = Utils.escapeHtml;
 
   return {
@@ -1380,6 +1554,10 @@ window.Scheduler = (function () {
     getActiveTab:  () => state.activeTab,
     getActiveView: () => state.view,
     getYard:       () => state.yard,
+    // Roster / entries snapshots — used by Optimizer.debugSupplyAt and any
+    // future inspection tooling. Always returns the most recent fetch.
+    getAllDrivers: () => state.allDrivers || [],
+    getAllEntries: () => state.allEntries || [],
     // Expand a display-yard code into the array of underlying yard codes
     // (target itself + any aliases pointing to it). Returns null if no filter.
     yardFilterFor,

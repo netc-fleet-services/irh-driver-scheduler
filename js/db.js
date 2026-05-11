@@ -37,7 +37,15 @@ window.DB = (function () {
 
     const { data, error } = await q;
     if (error) throw error;
-    return data;
+
+    // Suppress non-driver staff (managers etc.) listed in APP_CONFIG.
+    const excluded = new Set(
+      (window.APP_CONFIG?.excludedDriverNames || [])
+        .map(n => String(n).trim().toLowerCase())
+        .filter(Boolean)
+    );
+    if (excluded.size === 0) return data;
+    return data.filter(d => !excluded.has(String(d.name || "").trim().toLowerCase()));
   }
 
   // Distinct companies present in `drivers` (for the company filter dropdown).

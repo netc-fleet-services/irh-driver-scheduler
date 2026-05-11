@@ -175,15 +175,54 @@ window.PrintSchedule = (function () {
     const title    = `${tabLabel} Schedule — ${rangeLabel}`;
     const subtitle = `${yardLabel} · ${sorted.length} ${tabLabel.toLowerCase()}${sorted.length === 1 ? "" : "s"} · printed ${printedAt}`;
 
+    // Coverage notes (drivers tab only). Optional — silently skipped if the
+    // baseline isn't available.
+    const coverageHtml = await buildCoverageBlock({ tab, drivers: sorted, entries, dates });
+
     if (format === "gantt") {
-      return buildGanttDoc({ title, subtitle, sorted, dates, byKey, days });
+      return buildGanttDoc({ title, subtitle, sorted, dates, byKey, days, coverageHtml });
     }
-    return buildTableDoc({ title, subtitle, sorted, dates, byKey, days });
+    return buildTableDoc({ title, subtitle, sorted, dates, byKey, days, coverageHtml });
+  }
+
+  // Build the "Coverage notes" block: top understaffed/overstaffed hours for
+  // the printed window. Returns "" if not applicable.
+  async function buildCoverageBlock({ tab, drivers, entries, dates }) {
+    if (tab !== "drivers" || !window.Optimizer) return "";
+
+    const towingDrivers = Optimizer.filterSupplyDrivers(drivers);
+    if (towingDrivers.length === 0) return "";
+
+    let baseline;
+    try { baseline = await Optimizer.loadBaseline(); }
+    catch (err) { console.warn("Optimizer baseline load failed:", err); return ""; }
+    if (!baseline) return "";
+
+    const isoStart = Utils.toIsoDate(dates[0]);
+    const isoEnd   = Utils.toIsoDate(dates[dates.length - 1]);
+    const gaps = Optimizer.computeGaps(entries, towingDrivers, baseline, isoStart, isoEnd);
+    const { under, over } = Optimizer.topSuggestions(gaps);
+    if (!under.length && !over.length) return "";
+
+    const li = (g) => `<li>${escapeHtml(Optimizer.suggestionText(g))}</li>`;
+    const underBlock = under.length
+      ? `<div class="cov-col"><h3 class="cov-col-title cov-col-title--under">Understaffed</h3><ul>${under.map(li).join("")}</ul></div>`
+      : "";
+    const overBlock = over.length
+      ? `<div class="cov-col"><h3 class="cov-col-title cov-col-title--over">Overstaffed</h3><ul>${over.map(li).join("")}</ul></div>`
+      : "";
+
+    return `
+      <section class="cov">
+        <h2>Coverage notes</h2>
+        <p class="cov-blurb">Compared to historical call volume (LDT + HDT only). Copart batch dispatches are spread across 8 AM–4 PM in the baseline.</p>
+        <div class="cov-cols">${underBlock}${overBlock}</div>
+      </section>`;
   }
 
   // ---------- Table format ----------
 
-  function buildTableDoc({ title, subtitle, sorted, dates, byKey, days }) {
+  function buildTableDoc({ title, subtitle, sorted, dates, byKey, days, coverageHtml }) {
     const headerRow = `
       <tr>
         <th class="col-driver">Driver</th>
@@ -212,7 +251,7 @@ window.PrintSchedule = (function () {
       return `<tr>${driverCell}${dayCells}</tr>`;
     }).join("");
 
-    return tablePrintDocTemplate({ title, subtitle, headerRow, bodyRows, colCount: days });
+    return tablePrintDocTemplate({ title, subtitle, headerRow, bodyRows, colCount: days, coverageHtml });
   }
 
   function renderTableCell(entries) {
@@ -237,7 +276,7 @@ window.PrintSchedule = (function () {
     }).join("");
   }
 
-  function tablePrintDocTemplate({ title, subtitle, headerRow, bodyRows, colCount }) {
+  function tablePrintDocTemplate({ title, subtitle, headerRow, bodyRows, colCount, coverageHtml }) {
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -269,6 +308,17 @@ window.PrintSchedule = (function () {
   .toolbar { margin: 8px 0 14px; }
   .toolbar button { padding: 6px 12px; font: inherit; cursor: pointer; }
   @media print { .toolbar { display: none; } }
+
+  .cov { margin-top: 16px; page-break-inside: avoid; }
+  .cov h2 { font-size: 12pt; margin: 0 0 4px; }
+  .cov-blurb { font-size: 8pt; color: #555; margin: 0 0 8px; }
+  .cov-cols { display: flex; gap: 16px; }
+  .cov-col { flex: 1; }
+  .cov-col-title { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.6px; margin: 0 0 4px; }
+  .cov-col-title--under { color: #b91c1c; }
+  .cov-col-title--over  { color: #1d4ed8; }
+  .cov ul { margin: 0; padding-left: 18px; font-size: 9pt; }
+  .cov li { margin-bottom: 2px; }
 </style>
 </head>
 <body>
@@ -284,6 +334,7 @@ window.PrintSchedule = (function () {
     <thead>${headerRow}</thead>
     <tbody>${bodyRows}</tbody>
   </table>
+  ${coverageHtml || ""}
 </body>
 </html>`;
   }
@@ -310,7 +361,7 @@ window.PrintSchedule = (function () {
 
   // ---------- Gantt format ----------
 
-  function buildGanttDoc({ title, subtitle, sorted, dates, byKey, days }) {
+  function buildGanttDoc({ title, subtitle, sorted, dates, byKey, days, coverageHtml }) {
     // One percent-positioned bar per shift across (days × 24h). OFF blocks
     // span their day; we don't try to replicate the on-screen "extends back
     // to previous shift end" trick on paper because tightly packed bars get
@@ -392,10 +443,10 @@ window.PrintSchedule = (function () {
         </div>`;
     }).join("");
 
-    return ganttPrintDocTemplate({ title, subtitle, axisLabels, rows, colCount: days });
+    return ganttPrintDocTemplate({ title, subtitle, axisLabels, rows, colCount: days, coverageHtml });
   }
 
-  function ganttPrintDocTemplate({ title, subtitle, axisLabels, rows, colCount }) {
+  function ganttPrintDocTemplate({ title, subtitle, axisLabels, rows, colCount, coverageHtml }) {
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -433,6 +484,17 @@ window.PrintSchedule = (function () {
   .toolbar { margin: 8px 0 14px; }
   .toolbar button { padding: 6px 12px; font: inherit; cursor: pointer; }
   @media print { .toolbar { display: none; } }
+
+  .cov { margin-top: 16px; page-break-inside: avoid; }
+  .cov h2 { font-size: 12pt; margin: 0 0 4px; }
+  .cov-blurb { font-size: 8pt; color: #555; margin: 0 0 8px; }
+  .cov-cols { display: flex; gap: 16px; }
+  .cov-col { flex: 1; }
+  .cov-col-title { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.6px; margin: 0 0 4px; }
+  .cov-col-title--under { color: #b91c1c; }
+  .cov-col-title--over  { color: #1d4ed8; }
+  .cov ul { margin: 0; padding-left: 18px; font-size: 9pt; }
+  .cov li { margin-bottom: 2px; }
 </style>
 </head>
 <body>
@@ -449,6 +511,7 @@ window.PrintSchedule = (function () {
     <div class="gx-axis">${axisLabels}</div>
   </div>
   ${rows}
+  ${coverageHtml || ""}
 </body>
 </html>`;
   }

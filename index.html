@@ -56,6 +56,28 @@
     <!-- Weekly stats: last / this / next -->
     <div class="week-stats" id="week-stats"></div>
 
+    <!-- Coverage panel: optimizer suggestions for the visible week -->
+    <section class="coverage" id="coverage-panel" hidden>
+      <header class="coverage__header">
+        <button type="button" class="coverage__toggle" id="coverage-toggle"
+                aria-expanded="true" title="Show / hide coverage suggestions">
+          <span class="coverage__chevron" aria-hidden="true">&#9662;</span>
+          <span class="coverage__title">Coverage</span>
+          <span class="coverage__summary muted" id="coverage-summary"></span>
+        </button>
+      </header>
+      <div class="coverage__body" id="coverage-body">
+        <div class="coverage__col">
+          <h4 class="coverage__col-title coverage__col-title--under">Understaffed</h4>
+          <ul class="coverage__list" id="coverage-under"></ul>
+        </div>
+        <div class="coverage__col">
+          <h4 class="coverage__col-title coverage__col-title--over">Overstaffed</h4>
+          <ul class="coverage__list" id="coverage-over"></ul>
+        </div>
+      </div>
+    </section>
+
     <!-- Week navigation -->
     <div class="week-nav">
       <div class="week-nav__left">
@@ -167,6 +189,102 @@
         <div class="gantt__axis" id="gantt-axis"></div>
       </div>
       <div class="gantt__body" id="gantt-body"></div>
+    </section>
+
+    <!-- Historical panel -->
+    <section class="historical" id="historical-view" hidden>
+      <div class="historical__toolbar">
+        <label class="historical__field">
+          <span>Month</span>
+          <select id="historical-month">
+            <option value="">All months (aggregate)</option>
+            <option value="1">January</option>
+            <option value="2">February</option>
+            <option value="3">March</option>
+            <option value="4">April</option>
+            <option value="5">May</option>
+            <option value="6">June</option>
+            <option value="7">July</option>
+            <option value="8">August</option>
+            <option value="9">September</option>
+            <option value="10">October</option>
+            <option value="11">November</option>
+            <option value="12">December</option>
+          </select>
+        </label>
+        <span class="muted" id="historical-summary"></span>
+      </div>
+      <div class="historical__sections" id="historical-sections"></div>
+    </section>
+
+    <!-- Settings panel -->
+    <section class="settings-view" id="settings-view" hidden>
+      <form class="settings-form" id="settings-form">
+        <h2>Optimizer settings</h2>
+        <p class="muted">
+          These knobs drive the Coverage panel and day-view coverage strip.
+          Saved values are shared across all dispatchers.
+        </p>
+
+        <fieldset class="settings-group">
+          <legend>Thresholds</legend>
+          <div class="settings-row">
+            <label class="field">
+              <span>Calls per driver per hour</span>
+              <input type="number" id="setting-cpd" step="0.1" min="0.1" max="10" />
+              <small class="muted">How many calls one driver can handle per hour. Default 1.0.</small>
+            </label>
+          </div>
+          <div class="settings-row settings-row--two">
+            <label class="field">
+              <span>Understaffed cutoff</span>
+              <input type="number" id="setting-under" step="0.1" max="0" />
+              <small class="muted">Flag red when gap ≤ this. Default −1.0.</small>
+            </label>
+            <label class="field">
+              <span>Overstaffed cutoff</span>
+              <input type="number" id="setting-over" step="0.1" min="0" />
+              <small class="muted">Flag blue when gap ≥ this. Default +2.0.</small>
+            </label>
+          </div>
+          <div class="settings-row settings-row--two">
+            <label class="field">
+              <span>Top understaffed shown</span>
+              <input type="number" id="setting-topu" step="1" min="0" max="50" />
+              <small class="muted">Items in the Coverage panel.</small>
+            </label>
+            <label class="field">
+              <span>Top overstaffed shown</span>
+              <input type="number" id="setting-topo" step="1" min="0" max="50" />
+              <small class="muted">Items in the Coverage panel.</small>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend>Supply scope</legend>
+          <p class="muted">
+            Comma-separated lists. Drivers must match a supply function and
+            must NOT be in any excluded yard to count toward towing capacity.
+          </p>
+          <label class="field">
+            <span>Supply functions</span>
+            <input type="text" id="setting-fns" placeholder="LDT, HDT" />
+            <small class="muted">Driver `function` values that count. Default: LDT, HDT.</small>
+          </label>
+          <label class="field">
+            <span>Excluded yards</span>
+            <input type="text" id="setting-yards" placeholder="UFP" />
+            <small class="muted">Yards in `irh_yard_number` to skip. Default: UFP.</small>
+          </label>
+        </fieldset>
+
+        <div class="settings-actions">
+          <button type="button" class="btn btn--ghost" id="setting-reset">Reset to defaults</button>
+          <button type="submit" class="btn btn--primary" id="setting-save">Save</button>
+          <span class="settings-status" id="setting-status"></span>
+        </div>
+      </form>
     </section>
 
     <!-- Stats panel -->
@@ -358,9 +476,22 @@
         </div>
         <button type="button" class="btn btn--ghost modal__close" data-modal-close aria-label="Close">&times;</button>
       </header>
+      <div class="day-view__toolbar">
+        <label class="toggle" title="Hide drivers whose yard is in the excluded-yards list (Settings → Excluded yards). Coverage math is unaffected.">
+          <input type="checkbox" id="day-view-hide-ufp" />
+          <span>Hide UFP</span>
+        </label>
+        <div class="day-view__legend" aria-hidden="true">
+          <span class="day-view__legend-item"><i class="day-view__swatch day-view__swatch--under"></i>under</span>
+          <span class="day-view__legend-item"><i class="day-view__swatch day-view__swatch--ok"></i>on target</span>
+          <span class="day-view__legend-item"><i class="day-view__swatch day-view__swatch--over"></i>over</span>
+        </div>
+        <span class="day-view__coverage-summary muted" id="day-view-coverage-summary"></span>
+      </div>
       <div class="modal__body modal__body--no-pad">
         <div class="timeline" id="timeline">
           <div class="timeline__axis" id="timeline-axis"></div>
+          <div class="timeline__coverage" id="timeline-coverage" hidden></div>
           <div class="timeline__rows" id="timeline-rows"></div>
         </div>
         <div class="timeline__empty" id="timeline-empty" hidden>
@@ -387,10 +518,14 @@
   <script src="js/supabase.js"></script>
   <script src="js/auth.js"></script>
   <script src="js/db.js"></script>
+  <script src="js/settings.js"></script>
   <script src="js/shift-modal.js"></script>
   <script src="js/day-view.js"></script>
   <script src="js/stats-aggregations.js"></script>
+  <script src="js/optimizer.js"></script>
   <script src="js/stats.js"></script>
+  <script src="js/historical.js"></script>
+  <script src="js/settings-view.js"></script>
   <script src="js/print-schedule.js"></script>
   <script src="js/scheduler.js"></script>
   <script src="js/app.js"></script>
